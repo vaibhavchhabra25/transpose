@@ -7,46 +7,73 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
 
 (function () {
   'use strict';
+  
+  const host = window.location.hostname;
 
-  // ── popup → injected.js ───────────────────────────────────────────────────
+  // 1. Auto-load saved pitch for this specific domain on startup
+  chrome.storage.local.get([`pitch_${host}`, `formants_${host}`], (res) => {
+    const savedPitch = res[`pitch_${host}`] || 0;
+    const savedFormants = res[`formants_${host}`] || 0;
+    
+    if (savedPitch !== 0 || savedFormants !== 0) {
+        // Give injected.js time to attach its listeners, then push the saved state
+        setTimeout(() => {
+            document.dispatchEvent(new CustomEvent('__pitchshift:set', {
+                detail: { semitones: savedPitch, formants: savedFormants }
+            }));
+        }, 200);
+    }
+  });
 
+  // 2. Save pitch for this domain when changed via shortcuts
+  document.addEventListener('__pitchshift:save', (e) => {
+      chrome.storage.local.set({
+          [`pitch_${host}`]: e.detail.semitones,
+          [`formants_${host}`]: e.detail.formants
+      });
+  });
+
+  // 3. Relay Popup <--> Injected World
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-
     if (msg.type === 'SET_SEMITONES') {
-      // 1. Listen for state reply BEFORE dispatching (avoid race)
       const onState = (e) => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: e.detail.hookedCount, mediaCount: e.detail.hookedCount });
+        sendResponse({ ok: true, hookedCount: e.detail.hookedCount, semitones: e.detail.semitones });
       };
       document.addEventListener('__pitchshift:state', onState);
-
-      // 2. Send command to MAIN world
+      
       document.dispatchEvent(new CustomEvent('__pitchshift:set', {
-        detail: { semitones: msg.semitones },
+        detail: { semitones: msg.semitones }, // Note: popup only modifies semitones right now
       }));
+      
+      // Save it locally for this domain
+      chrome.storage.local.set({ [`pitch_${host}`]: msg.semitones });
 
-      // Fallback: if injected.js doesn't reply in 800ms, respond anyway
       setTimeout(() => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: 0, mediaCount: 0 });
+        sendResponse({ ok: true, hookedCount: 0 });
       }, 800);
-
-      return true; // keep message channel open for async sendResponse
+      return true;
     }
 
     if (msg.type === 'GET_STATE') {
       const onState = (e) => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: e.detail.hookedCount, mediaCount: e.detail.hookedCount });
+        // We now pass the live semitones and formants back to the popup!
+        sendResponse({ 
+            ok: true, 
+            hookedCount: e.detail.hookedCount, 
+            semitones: e.detail.semitones,
+            formants: e.detail.formants
+        });
       };
       document.addEventListener('__pitchshift:state', onState);
       document.dispatchEvent(new CustomEvent('__pitchshift:getstate'));
 
       setTimeout(() => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: 0, mediaCount: 0 });
+        sendResponse({ ok: true, hookedCount: 0, semitones: 0 });
       }, 800);
-
       return true;
     }
   });

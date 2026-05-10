@@ -22,7 +22,7 @@ function semitoneLabel(s) {
 
 function formatValue(s) {
   if (s === 0) return '0.0';
-  const sign = s > 0 ? '+' : '−'; // Using minus sign for aesthetics
+  const sign = s > 0 ? '+' : '−';
   const abs = Math.abs(s);
   return `${sign}${abs.toFixed(1)}`;
 }
@@ -65,19 +65,15 @@ function sendPitch() {
         setStatus('error', 'Content script not found. Reload the page.');
         return;
       }
-      const { hookedCount, mediaCount } = response;
+      const { hookedCount } = response;
       if (hookedCount > 0) {
         setStatus('active', `Connected to ${hookedCount} media element${hookedCount > 1 ? 's' : ''}`);
-      } else if (mediaCount === 0) {
-        setStatus('idle', 'No media found on this page');
       } else {
-        setStatus('idle', `Found ${mediaCount} element${mediaCount > 1 ? 's' : ''} — press play first`);
+        setStatus('idle', `No media found or press play first`);
       }
     }
   );
   render();
-  // Persist setting for this tab
-  chrome.storage.session.set({ semitones }).catch(() => {});
 }
 
 function setStatus(state, message) {
@@ -88,7 +84,6 @@ function setStatus(state, message) {
 // ─── Change semitones ─────────────────────────────────────────────────────
 
 function change(delta) {
-  // Fix floating point errors (e.g. 0.1 + 0.2) and clamp
   semitones = Math.max(-12, Math.min(12, +(semitones + delta).toFixed(1)));
   sendPitch();
 }
@@ -102,8 +97,8 @@ function reset() {
 
 document.getElementById('btnMinus').addEventListener('click', () => change(-1));
 document.getElementById('btnPlus').addEventListener('click', () => change(+1));
-document.getElementById('btnMinusHalf').addEventListener('click', () => change(-0.1)); // Changed to 0.1 for micro tuning
-document.getElementById('btnPlusHalf').addEventListener('click', () => change(+0.1));  // Changed to 0.1 for micro tuning
+document.getElementById('btnMinusHalf').addEventListener('click', () => change(-0.1)); 
+document.getElementById('btnPlusHalf').addEventListener('click', () => change(+0.1));  
 document.getElementById('btnReset').addEventListener('click', reset);
 
 slider.addEventListener('input', () => {
@@ -125,20 +120,12 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ─── Init: load saved state and query content script ─────────────────────
+// ─── Init: Query active tab for its specific state ─────────────────────
 
-async function init() {
-  // Load persisted semitones
-  try {
-    const stored = await chrome.storage.session.get('semitones');
-    if (stored?.semitones !== undefined) {
-      semitones = stored.semitones;
-    }
-  } catch (_) {}
-
+function init() {
+  // Render neutral state immediately while we ask the tab for its live pitch
   render();
 
-  // Query current state from content script
   chrome.runtime.sendMessage(
     { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } },
     (response) => {
@@ -146,13 +133,18 @@ async function init() {
         setStatus('idle', 'Open a page with audio/video');
         return;
       }
-      const { mediaCount, hookedCount } = response;
+      
+      // Mirror the actual live state of the active tab!
+      if (response.semitones !== undefined) {
+          semitones = response.semitones;
+          render();
+      }
+
+      const { hookedCount } = response;
       if (hookedCount > 0) {
         setStatus('active', `Connected to ${hookedCount} media element${hookedCount > 1 ? 's' : ''}`);
-      } else if (mediaCount > 0) {
-        setStatus('idle', `${mediaCount} media element${mediaCount > 1 ? 's' : ''} — press play to activate`);
       } else {
-        setStatus('idle', 'No media on this page');
+        setStatus('idle', 'No media on this page (press play)');
       }
     }
   );

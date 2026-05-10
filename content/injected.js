@@ -21,31 +21,50 @@
             toast = document.createElement('div');
             toast.id = 'pitchshift-osd-toast';
 
+            // Upgraded UI: Pill-shape, soft shadow, better glassmorphism
             Object.assign(toast.style, {
                 position: 'fixed',
-                bottom: '15%',
+                bottom: '12%',
                 left: '50%',
                 transform: 'translateX(-50%)',
-                backgroundColor: 'rgba(0, 0, 0, 0.85)',
+                backgroundColor: 'rgba(28, 28, 30, 0.85)',
                 color: '#ffffff',
-                padding: '12px 24px',
-                borderRadius: '12px',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                fontSize: '28px',
-                fontWeight: 'bold',
+                padding: '14px 28px',
+                borderRadius: '50px', // Sleek pill shape
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+                fontSize: '22px',
+                fontWeight: '600',
+                letterSpacing: '0.3px',
+                boxShadow: '0 10px 30px rgba(0, 0, 0, 0.4)', // Adds depth
                 zIndex: '2147483647',
                 pointerEvents: 'none',
-                transition: 'opacity 0.2s ease-in-out',
+                transition: 'opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1)', // Snappier fade
                 opacity: '0',
-                backdropFilter: 'blur(4px)'
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                whiteSpace: 'pre' // Keeps the spacing clean
             });
             document.body.appendChild(toast);
         }
 
-        // Format to 1 decimal place for the Toast UI
-        const sign = currentSemitones > 0 ? '+' : '';
-        const formantText = currentFormants === 1 ? ' | Formants: ON' : '';
-        toast.textContent = `Pitch: ${sign}${Number(currentSemitones).toFixed(1)} st${formantText}`;
+        // ── Text Improvements ──
+        let text = '';
+
+        // 1. Handle the Zero State cleanly
+        if (currentSemitones === 0) {
+            text = '🎵 Original Pitch';
+        } else {
+            // 2. Add the musical note and clean formatting
+            const sign = currentSemitones > 0 ? '+' : '';
+            text = `🎵 ${sign}${Number(currentSemitones).toFixed(1)} st`;
+        }
+
+        // 3. Add the Formant indicator if active
+        if (currentFormants === 1) {
+            text += '   •   🗣️ Formants On';
+        }
+
+        toast.textContent = text;
         toast.style.opacity = '1';
 
         clearTimeout(toastTimer);
@@ -107,7 +126,11 @@
         clearTimeout(broadcastTimer);
         broadcastTimer = setTimeout(() => {
             document.dispatchEvent(new CustomEvent('__pitchshift:state', {
-                detail: { hookedCount: elementMap.size },
+                detail: {
+                    hookedCount: elementMap.size,
+                    semitones: currentSemitones,
+                    formants: currentFormants
+                },
             }));
         }, 150);
     }
@@ -140,7 +163,7 @@
             newPitch = Math.round(newPitch * 10) / 10;
 
             applyPitch(newPitch, newFormants);
-            showToast(); 
+            showToast();
 
             document.dispatchEvent(new CustomEvent('__pitchshift:save', {
                 detail: { semitones: newPitch, formants: newFormants }
@@ -149,7 +172,8 @@
     });
 
     document.addEventListener('__pitchshift:set', (e) => {
-        applyPitch(e.detail.semitones);
+        const newFormants = e.detail.formants !== undefined ? e.detail.formants : currentFormants;
+        applyPitch(e.detail.semitones, newFormants);
         broadcastState();
     });
 
