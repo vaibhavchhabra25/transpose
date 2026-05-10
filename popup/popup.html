@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PitchShift</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="shell">
+
+    <!-- Header -->
+    <header>
+      <div class="logo">
+        <span class="logo-icon">♩</span>
+        <span class="logo-text">PitchShift</span>
+      </div>
+      <div class="status-dot" id="statusDot" title="Not connected"></div>
+    </header>
+
+    <!-- Main display -->
+    <div class="display-area">
+      <div class="semitone-label">SEMITONES</div>
+      <div class="semitone-value" id="semitoneValue">0</div>
+      <div class="note-label" id="noteLabel">No change</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <!-- Coarse: ±1 semitone -->
+      <button class="btn btn-large" id="btnMinus" aria-label="Down 1 semitone">−1</button>
+
+      <!-- Fine: ±0.5 semitone (for microtonal tweaks) -->
+      <div class="fine-controls">
+        <button class="btn btn-small" id="btnMinusHalf" aria-label="Down half semitone">−½</button>
+        <button class="btn btn-reset" id="btnReset" aria-label="Reset to 0">↺</button>
+        <button class="btn btn-small" id="btnPlusHalf" aria-label="Up half semitone">+½</button>
+      </div>
+
+      <button class="btn btn-large" id="btnPlus" aria-label="Up 1 semitone">+1</button>
+    </div>
+
+    <!-- Keyboard shortcut hints -->
+    <div class="key-hints">
+      <span class="key">↑↓</span> semitone &nbsp;|&nbsp;
+      <span class="key">Shift+↑↓</span> half
+    </div>
+
+    <!-- Slider for quick sweep -->
+    <div class="slider-area">
+      <span class="slider-bound">−12</span>
+      <input type="range" id="pitchSlider" min="-12" max="12" step="0.5" value="0" />
+      <span class="slider-bound">+12</span>
+    </div>
+
+    <!-- Footer status -->
+    <div class="footer" id="footer">Scanning for media…</div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
