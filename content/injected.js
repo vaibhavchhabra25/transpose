@@ -8,13 +8,14 @@
 
     let currentSemitones = 0;
     let currentFactor = 1.0;
+    let currentFormants = 0; // NEW: 0 = Off, 1 = On
     const elementMap = new Map();
     const hookedSet = new WeakSet();
     const readyContexts = new WeakSet();
     let fallbackCtx = null;
 
     let toastTimer;
-    function showToast(semitones) {
+    function showToast() {
         let toast = document.getElementById('pitchshift-osd-toast');
         if (!toast) {
             toast = document.createElement('div');
@@ -42,8 +43,9 @@
         }
 
         // Format to 1 decimal place for the Toast UI
-        const sign = semitones > 0 ? '+' : '';
-        toast.textContent = `Pitch: ${sign}${Number(semitones).toFixed(1)} st`;
+        const sign = currentSemitones > 0 ? '+' : '';
+        const formantText = currentFormants === 1 ? ' | Formants: ON' : '';
+        toast.textContent = `Pitch: ${sign}${Number(currentSemitones).toFixed(1)} st${formantText}`;
         toast.style.opacity = '1';
 
         clearTimeout(toastTimer);
@@ -70,21 +72,28 @@
         }
     }
 
-    function applyPitch(semitones) {
+    function applyPitch(semitones, formants = currentFormants) {
         let parsedSemitones = parseFloat(semitones);
         if (isNaN(parsedSemitones)) parsedSemitones = 0;
 
         currentSemitones = parsedSemitones;
+        currentFormants = formants;
         currentFactor = Math.pow(2, parsedSemitones / 12);
 
         for (const [el, shifter] of elementMap) {
             try {
-                if (shifter && shifter.parameters && shifter.parameters.has('pitchFactor')) {
-                    const param = shifter.parameters.get('pitchFactor');
-                    if (shifter.context.state === 'suspended') {
-                        param.value = currentFactor;
-                    } else {
-                        param.setTargetAtTime(currentFactor, shifter.context.currentTime, 0.05);
+                if (shifter && shifter.parameters) {
+                    const pitchParam = shifter.parameters.get('pitchFactor');
+                    const formantParam = shifter.parameters.get('preserveFormants');
+
+                    if (formantParam) formantParam.value = currentFormants;
+
+                    if (pitchParam) {
+                        if (shifter.context.state === 'suspended') {
+                            pitchParam.value = currentFactor;
+                        } else {
+                            pitchParam.setTargetAtTime(currentFactor, shifter.context.currentTime, 0.05);
+                        }
                     }
                 }
             } catch (err) {
@@ -107,31 +116,34 @@
     window.addEventListener('keydown', (e) => {
         if (e.altKey && e.shiftKey) {
             let newPitch = currentSemitones;
+            let newFormants = currentFormants;
 
-            if (e.key === 'ArrowUp') {
+            // Using e.code ignores OS-level Alt/Option character replacements
+            if (e.code === 'ArrowUp') {
                 newPitch += 1;
-            } else if (e.key === 'ArrowDown') {
+            } else if (e.code === 'ArrowDown') {
                 newPitch -= 1;
-            } else if (e.key === 'ArrowRight') {
-                newPitch += 0.1; // Fine tune UP
-            } else if (e.key === 'ArrowLeft') {
-                newPitch -= 0.1; // Fine tune DOWN
-            } else if (e.key === '0') {
+            } else if (e.code === 'ArrowRight') {
+                newPitch += 0.1;
+            } else if (e.code === 'ArrowLeft') {
+                newPitch -= 0.1;
+            } else if (e.code === 'Digit0' || e.code === 'Numpad0') {
                 newPitch = 0;
+            } else if (e.code === 'KeyF') { // Toggle Formants
+                newFormants = currentFormants === 0 ? 1 : 0;
             } else {
                 return;
             }
             e.preventDefault();
 
-            // Clamp between -12 and 12, and fix floating point precision
             newPitch = Math.max(-12, Math.min(12, newPitch));
             newPitch = Math.round(newPitch * 10) / 10;
 
-            applyPitch(newPitch);
-            showToast(newPitch);
+            applyPitch(newPitch, newFormants);
+            showToast(); 
 
             document.dispatchEvent(new CustomEvent('__pitchshift:save', {
-                detail: { semitones: newPitch }
+                detail: { semitones: newPitch, formants: newFormants }
             }));
         }
     });
@@ -153,7 +165,7 @@
             }
         }
     };
-    
+
     window.addEventListener('mousedown', resumeContexts, true);
     window.addEventListener('touchstart', resumeContexts, true);
     window.addEventListener('keydown', resumeContexts, true);
