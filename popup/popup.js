@@ -8,23 +8,23 @@ function semitoneLabel(s) {
   if (s === 0) return 'No change';
   const dir = s > 0 ? '▲' : '▼';
   const abs = Math.abs(s);
-  const isHalf = abs % 1 !== 0;
-  if (isHalf) {
-    return `${dir} ${abs} semitones (microtonal)`;
+  const isMicro = abs % 1 !== 0;
+  
+  if (isMicro) {
+    return `${dir} ${abs.toFixed(1)} semitones (microtonal)`;
   }
+  
   const steps = Math.round(abs);
-  if (steps === 1) return `${dir} 1 semitone`;
-  if (steps === 12) return `${dir} 1 octave (${steps} st)`;
-  return `${dir} ${steps} semitones`;
+  if (steps === 1) return `${dir} 1.0 semitone`;
+  if (steps === 12) return `${dir} 1 octave (${steps}.0 st)`;
+  return `${dir} ${steps}.0 semitones`;
 }
 
 function formatValue(s) {
-  if (s === 0) return '0';
-  const sign = s > 0 ? '+' : '−';
+  if (s === 0) return '0.0';
+  const sign = s > 0 ? '+' : '−'; // Using minus sign for aesthetics
   const abs = Math.abs(s);
-  // Show ½ symbol for .5 values
-  if (abs % 1 === 0.5) return `${sign}${Math.floor(abs)}½`;
-  return `${sign}${abs}`;
+  return `${sign}${abs.toFixed(1)}`;
 }
 
 // ─── State ───────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ const semitoneValueEl = document.getElementById('semitoneValue');
 const noteLabelEl = document.getElementById('noteLabel');
 const statusDot = document.getElementById('statusDot');
 const footerEl = document.getElementById('footer');
-const slider = document.getElementById('pitchSlider');
+const slider = document.getElementById('pitch-slider');
 
 // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -88,7 +88,8 @@ function setStatus(state, message) {
 // ─── Change semitones ─────────────────────────────────────────────────────
 
 function change(delta) {
-  semitones = Math.max(-12, Math.min(12, +(semitones + delta).toFixed(2)));
+  // Fix floating point errors (e.g. 0.1 + 0.2) and clamp
+  semitones = Math.max(-12, Math.min(12, +(semitones + delta).toFixed(1)));
   sendPitch();
 }
 
@@ -101,8 +102,8 @@ function reset() {
 
 document.getElementById('btnMinus').addEventListener('click', () => change(-1));
 document.getElementById('btnPlus').addEventListener('click', () => change(+1));
-document.getElementById('btnMinusHalf').addEventListener('click', () => change(-0.5));
-document.getElementById('btnPlusHalf').addEventListener('click', () => change(+0.5));
+document.getElementById('btnMinusHalf').addEventListener('click', () => change(-0.1)); // Changed to 0.1 for micro tuning
+document.getElementById('btnPlusHalf').addEventListener('click', () => change(+0.1));  // Changed to 0.1 for micro tuning
 document.getElementById('btnReset').addEventListener('click', reset);
 
 slider.addEventListener('input', () => {
@@ -118,8 +119,8 @@ slider.addEventListener('change', () => {
 
 document.addEventListener('keydown', (e) => {
   switch (e.key) {
-    case 'ArrowUp':    e.shiftKey ? change(+0.5) : change(+1); break;
-    case 'ArrowDown':  e.shiftKey ? change(-0.5) : change(-1); break;
+    case 'ArrowUp':    e.shiftKey ? change(+0.1) : change(+1); break;
+    case 'ArrowDown':  e.shiftKey ? change(-0.1) : change(-1); break;
     case 'r': case 'R': reset(); break;
   }
 });

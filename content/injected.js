@@ -15,13 +15,11 @@
 
     let toastTimer;
     function showToast(semitones) {
-        // 1. Find or create the toast element
         let toast = document.getElementById('pitchshift-osd-toast');
         if (!toast) {
             toast = document.createElement('div');
             toast.id = 'pitchshift-osd-toast';
 
-            // 2. Apply bulletproof inline styles so it looks good on ALL websites
             Object.assign(toast.style, {
                 position: 'fixed',
                 bottom: '15%',
@@ -34,8 +32,8 @@
                 fontFamily: 'system-ui, -apple-system, sans-serif',
                 fontSize: '28px',
                 fontWeight: 'bold',
-                zIndex: '2147483647', // Maximum possible z-index in CSS
-                pointerEvents: 'none', // Lets clicks pass through it
+                zIndex: '2147483647',
+                pointerEvents: 'none',
                 transition: 'opacity 0.2s ease-in-out',
                 opacity: '0',
                 backdropFilter: 'blur(4px)'
@@ -43,12 +41,11 @@
             document.body.appendChild(toast);
         }
 
-        // 3. Format the text (e.g., "+2 st", "-1 st", "0 st")
+        // Format to 1 decimal place for the Toast UI
         const sign = semitones > 0 ? '+' : '';
-        toast.textContent = `Pitch: ${sign}${semitones} st`;
+        toast.textContent = `Pitch: ${sign}${Number(semitones).toFixed(1)} st`;
         toast.style.opacity = '1';
 
-        // 4. Reset the fade-out timer every time the user presses a key
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => {
             toast.style.opacity = '0';
@@ -58,7 +55,6 @@
     async function ensureWorklet(ctx) {
         if (readyContexts.has(ctx)) return;
 
-        // Fetch the trusted, CSP-compliant extension URL
         const processorUrl = document.documentElement.dataset.processorUrl;
 
         if (!processorUrl) {
@@ -107,26 +103,35 @@
         }, 150);
     }
 
-    // ── Keyboard Shortcuts (Alt + Shift + Up/Down/0) ──
+    // ── Keyboard Shortcuts (Alt + Shift + Up/Down/Left/Right/0) ──
     window.addEventListener('keydown', (e) => {
         if (e.altKey && e.shiftKey) {
+            let newPitch = currentSemitones;
+
             if (e.key === 'ArrowUp') {
-                applyPitch(Math.min(12, currentSemitones + 1));
+                newPitch += 1;
             } else if (e.key === 'ArrowDown') {
-                applyPitch(Math.max(-12, currentSemitones - 1));
+                newPitch -= 1;
+            } else if (e.key === 'ArrowRight') {
+                newPitch += 0.1; // Fine tune UP
+            } else if (e.key === 'ArrowLeft') {
+                newPitch -= 0.1; // Fine tune DOWN
             } else if (e.key === '0') {
-                applyPitch(0);
+                newPitch = 0;
             } else {
                 return;
             }
             e.preventDefault();
 
-            // --> TRIGGER THE VISUAL INDICATOR HERE <--
-            showToast(currentSemitones);
+            // Clamp between -12 and 12, and fix floating point precision
+            newPitch = Math.max(-12, Math.min(12, newPitch));
+            newPitch = Math.round(newPitch * 10) / 10;
 
-            // Tell content.js to save this value so the popup UI updates
+            applyPitch(newPitch);
+            showToast(newPitch);
+
             document.dispatchEvent(new CustomEvent('__pitchshift:save', {
-                detail: { semitones: currentSemitones }
+                detail: { semitones: newPitch }
             }));
         }
     });
@@ -140,7 +145,6 @@
         broadcastState();
     });
 
-    // ── Global Wake-Up Event for YouTube Autoplay Policies ──
     const resumeContexts = () => {
         if (fallbackCtx && fallbackCtx.state === 'suspended') fallbackCtx.resume();
         for (const [, shifter] of elementMap) {
@@ -149,13 +153,12 @@
             }
         }
     };
-    // Wake up on mousedown/touchstart as well (fires faster than click)
+    
     window.addEventListener('mousedown', resumeContexts, true);
     window.addEventListener('touchstart', resumeContexts, true);
     window.addEventListener('keydown', resumeContexts, true);
     window.addEventListener('play', resumeContexts, true);
 
-    // ── Intercept 1: The AudioContext Proxy (Spotify / SoundCloud) ──
     const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
     if (NativeAudioContext) {
         const origCreateMediaElementSource = NativeAudioContext.prototype.createMediaElementSource;
@@ -210,7 +213,6 @@
         };
     }
 
-    // ── Intercept 2: Fallback (YouTube / YouTube Music) ──
     async function hookElement(el) {
         if (!(el instanceof HTMLMediaElement)) return;
         if (hookedSet.has(el)) return;
@@ -221,8 +223,6 @@
                 fallbackCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
 
-            // REMOVED THE DEADLOCK HERE! We no longer await .resume(). 
-            // We just let the graph build, and the global click/key listeners will wake it up naturally.
             await ensureWorklet(fallbackCtx);
 
             const source = fallbackCtx.createMediaElementSource(el);
@@ -241,7 +241,6 @@
             broadcastState();
 
         } catch (err) {
-            // THE FIX: If it failed because it wasn't ready, remove it from the set so we can retry!
             if (!err.message || !err.message.includes('already connected')) {
                 hookedSet.delete(el);
             }
@@ -254,28 +253,23 @@
         return nativePlay.call(this);
     };
 
-    // ── Intercept 3: Gentle SPA Scanner ──
     function scanForMedia(root) {
         if (!root) return;
 
-        // 1. Check the node itself
         if (root instanceof HTMLMediaElement && !hookedSet.has(root)) {
             hookElement(root);
         }
 
-        // 2. Query inside the normal DOM
         if (root.querySelectorAll) {
             root.querySelectorAll('video, audio').forEach(el => {
                 if (!hookedSet.has(el)) hookElement(el);
             });
         }
 
-        // 3. Drill down into Web Components (Shadow DOM) - CRITICAL FOR YOUTUBE
         if (root.shadowRoot) {
             scanForMedia(root.shadowRoot);
         }
 
-        // 4. Recursively check all children for nested Shadow DOMs
         const children = root.children;
         if (children) {
             for (let i = 0; i < children.length; i++) {
@@ -286,12 +280,10 @@
         }
     }
 
-    // Scan every second. Uses negligible CPU because it only processes elements once.
     setInterval(() => {
         scanForMedia(document.body);
     }, 1000);
 
-    // Initial scan on load
     scanForMedia(document.body);
 
     console.info('[PitchShift] MAIN world ready.');
