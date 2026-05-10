@@ -3,6 +3,8 @@
 // that injected.js (MAIN world) can hear, and relay responses back.
 // Never touches audio elements directly — all audio lives in MAIN world.
 
+document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/pitch-processor.js');
+
 (function () {
   'use strict';
 
