@@ -1,17 +1,12 @@
 // content/injected.js  —  world: "MAIN"
 // Runs in the PAGE's own JS context before any site scripts.
-// Owns the entire audio pipeline so we never need to pass DOM element
-// references across JS worlds (structured-clone drops them silently).
 
 (function () {
-  'use strict';
-  if (window.__pitchShiftInjected) return;
-  window.__pitchShiftInjected = true;
+    'use strict';
+    if (window.__pitchShiftInjected) return;
+    window.__pitchShiftInjected = true;
 
-  // ── Processor code embedded as a string → loaded via Blob URL ─────────────
-  // This avoids chrome-extension:// CSP issues on strict sites like SoundCloud.
-
-  const PROCESSOR_CODE = `
+    const PROCESSOR_CODE = `
 function fft(re, im, inverse) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
@@ -56,16 +51,17 @@ function createChannelState(F, H) {
     outputRing: new Float32Array(F*4), outputReadPos: 0, outputWritePos: F,
     lastInputPhase: new Float32Array(F), lastOutputPhase: new Float32Array(F),
     re: new Float32Array(F), im: new Float32Array(F),
+    oR: new Float32Array(F), oI: new Float32Array(F) 
   };
 }
 function processFrame(s, F, H, win, pf) {
-  const { re, im, inputRing, inputPos, lastInputPhase, lastOutputPhase, outputRing } = s;
+  const { re, im, inputRing, inputPos, lastInputPhase, lastOutputPhase, outputRing, oR, oI } = s;
   const half = F >> 1;
   for (let i = 0; i < F; i++) {
     re[i] = inputRing[(inputPos - F + i + F*4) % F] * win[i]; im[i] = 0;
+    oR[i] = 0; oI[i] = 0; 
   }
   fft(re, im, false);
-  const oR = new Float32Array(F), oI = new Float32Array(F);
   for (let k = 0; k <= half; k++) {
     const mag = Math.sqrt(re[k]*re[k]+im[k]*im[k]);
     const phase = Math.atan2(im[k], re[k]);
@@ -85,41 +81,54 @@ function processFrame(s, F, H, win, pf) {
   for (let i = 0; i < F; i++) outputRing[(ws+i)%rLen] += (oR[i]*win[i])/scale;
   s.outputWritePos = (ws+H)%rLen;
 }
+
 class PitchShifterProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [{ name:'pitchFactor', defaultValue:1, minValue:0.25, maxValue:4, automationRate:'k-rate' }];
   }
   constructor() {
     super();
-    this.F = 2048; this.H = 512;
+    this.F = 2048; 
+    this.H = 512;
     this.win = hannWindow(this.F); this.ch = [];
   }
   process(inputs, outputs, params) {
-    const inp = inputs[0], out = outputs[0];
-    if (!inp?.length || !out?.length) return true;
-    const pf = params.pitchFactor[0] ?? 1;
+    if (!inputs || !outputs) return true;
+    const inp = inputs[0];
+    const out = outputs[0];
+    if (!inp || !out || inp.length === 0 || out.length === 0) return true;
+    
+    let pf = 1.0;
+    if (params && params.pitchFactor && params.pitchFactor.length > 0) pf = params.pitchFactor[0];
+
     while (this.ch.length < inp.length) this.ch.push(createChannelState(this.F, this.H));
+
     for (let c = 0; c < inp.length; c++) {
-      const id = inp[c], od = out[c], st = this.ch[c], rLen = st.outputRing.length;
+      const id = inp[c], od = out[c];
+      if (!id || !od) continue;
+      
+      const st = this.ch[c];
+      const rLen = st.outputRing.length;
+
       for (let i = 0; i < id.length; i++) {
         st.inputRing[st.inputPos % this.F] = id[i];
         st.inputPos = (st.inputPos+1) % this.F;
-        if (--st.samplesUntilHop <= 0) {
-          st.samplesUntilHop = this.H;
-          if (pf !== 1) {
+        
+        if (pf === 1.0) {
+          od[i] = id[i];
+          if (--st.samplesUntilHop <= 0) st.samplesUntilHop = this.H;
+          st.outputRing[st.outputReadPos] = 0;
+          st.outputReadPos = (st.outputReadPos+1) % rLen;
+          st.outputWritePos = (st.outputReadPos + this.F) % rLen; 
+        } else {
+          if (--st.samplesUntilHop <= 0) {
+            st.samplesUntilHop = this.H;
             processFrame(st, this.F, this.H, this.win, pf);
-          } else {
-            const n = this.F, ws = st.outputWritePos;
-            for (let j = 0; j < n; j++) {
-              const v = st.inputRing[(st.inputPos-n+j+n*4)%n];
-              st.outputRing[(ws+j)%rLen] += v*st.win[j]/((n/this.H)/2);
-            }
-            st.outputWritePos = (ws+this.H)%rLen;
           }
+          od[i] = st.outputRing[st.outputReadPos];
+          st.outputRing[st.outputReadPos] = 0;
+          st.outputReadPos = (st.outputReadPos+1) % rLen;
         }
-        od[i] = st.outputRing[st.outputReadPos];
-        st.outputRing[st.outputReadPos] = 0;
-        st.outputReadPos = (st.outputReadPos+1) % rLen;
       }
     }
     return true;
@@ -128,157 +137,215 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
 registerProcessor('pitch-shifter', PitchShifterProcessor);
 `;
 
-  // ── Audio state (all in MAIN world, no cross-world transfers needed) ───────
+    let currentSemitones = 0;
+    let currentFactor = 1.0;
+    const elementMap = new Map();
+    const hookedSet = new WeakSet();
+    const readyContexts = new WeakSet();
+    let fallbackCtx = null;
 
-  let audioCtx = null;
-  let workletReady = false;
-  let currentFactor = 1.0;
-
-  // Map<HTMLMediaElement, AudioWorkletNode> — iterable for pitch updates
-  const elementMap = new Map();
-  // WeakSet for O(1) "already hooked?" check
-  const hookedSet = new WeakSet();
-  // WeakSet for elements created before src was set
-  const pendingSet = new WeakSet();
-
-  // ── AudioContext + worklet ────────────────────────────────────────────────
-
-  async function getCtx() {
-    if (audioCtx) return audioCtx;
-    audioCtx = new AudioContext();
-    return audioCtx;
-  }
-
-  async function ensureWorklet(ctx) {
-    if (workletReady) return;
-    const blob = new Blob([PROCESSOR_CODE], { type: 'application/javascript' });
-    const blobUrl = URL.createObjectURL(blob);
-    await ctx.audioWorklet.addModule(blobUrl);
-    URL.revokeObjectURL(blobUrl);
-    workletReady = true;
-  }
-
-  // ── Hook one element ──────────────────────────────────────────────────────
-
-  async function hookElement(el) {
-    if (!(el instanceof HTMLMediaElement)) return;
-    if (hookedSet.has(el)) return;
-
-    const hasSrc = !!(el.src || el.currentSrc);
-    const isReady = el.readyState >= 1;
-    if (!hasSrc && !isReady) {
-      pendingSet.add(el);
-      return;
+    async function ensureWorklet(ctx) {
+        if (readyContexts.has(ctx)) return;
+        const blob = new Blob([PROCESSOR_CODE], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        await ctx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        readyContexts.add(ctx);
     }
 
-    hookedSet.add(el); // claim before any await to prevent races
+    function applyPitch(semitones) {
+        let parsedSemitones = parseFloat(semitones);
+        if (isNaN(parsedSemitones)) parsedSemitones = 0;
 
-    try {
-      const ctx = await getCtx();
-      if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
-      await ensureWorklet(ctx);
+        currentSemitones = parsedSemitones; // Keep local state updated
+        currentFactor = Math.pow(2, parsedSemitones / 12);
 
-      const source = ctx.createMediaElementSource(el);
-      const shifter = new AudioWorkletNode(ctx, 'pitch-shifter', {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      shifter.parameters.get('pitchFactor').value = currentFactor;
-      source.connect(shifter);
-      shifter.connect(ctx.destination);
-      elementMap.set(el, shifter);
+        for (const [el, shifter] of elementMap) {
+            try {
+                if (shifter && shifter.parameters && shifter.parameters.has('pitchFactor')) {
+                    const param = shifter.parameters.get('pitchFactor');
 
-      console.info('[PitchShift] Hooked', el.tagName, el.src || el.currentSrc || '(MSE)');
-      broadcastState();
-    } catch (err) {
-      hookedSet.delete(el);
-      console.warn('[PitchShift] Hook failed:', err.message);
+                    // THE YOUTUBE CLOCK FIX:
+                    // If suspended, time is frozen. Do not use setTargetAtTime.
+                    if (shifter.context.state === 'suspended') {
+                        param.value = currentFactor;
+                    } else {
+                        param.setTargetAtTime(currentFactor, shifter.context.currentTime, 0.05);
+                    }
+                }
+            } catch (err) {
+                console.warn('[PitchShift] Pruning dead element');
+                elementMap.delete(el);
+            }
+        }
     }
-  }
 
-  function retryAll() {
-    document.querySelectorAll('audio, video').forEach(el => {
-      if (!hookedSet.has(el)) hookElement(el);
+    let broadcastTimer;
+    function broadcastState() {
+        clearTimeout(broadcastTimer);
+        broadcastTimer = setTimeout(() => {
+            document.dispatchEvent(new CustomEvent('__pitchshift:state', {
+                detail: { hookedCount: elementMap.size },
+            }));
+        }, 150);
+    }
+
+    // ── Keyboard Shortcuts (Alt + Shift + Up/Down/0) ──
+    window.addEventListener('keydown', (e) => {
+        if (e.altKey && e.shiftKey) {
+            if (e.key === 'ArrowUp') {
+                applyPitch(Math.min(12, currentSemitones + 1));
+            } else if (e.key === 'ArrowDown') {
+                applyPitch(Math.max(-12, currentSemitones - 1));
+            } else if (e.key === '0') {
+                applyPitch(0);
+            } else {
+                return;
+            }
+            e.preventDefault();
+
+            // Tell content.js to save this value so the popup UI updates
+            document.dispatchEvent(new CustomEvent('__pitchshift:save', {
+                detail: { semitones: currentSemitones }
+            }));
+        }
     });
-  }
 
-  // ── Pitch update ─────────────────────────────────────────────────────────
-
-  function applyPitch(semitones) {
-    currentFactor = Math.pow(2, semitones / 12);
-    for (const [, shifter] of elementMap) {
-      shifter.parameters.get('pitchFactor').value = currentFactor;
-    }
-  }
-
-  // ── Talk back to content.js via CustomEvent (plain data only) ─────────────
-
-  function broadcastState() {
-    document.dispatchEvent(new CustomEvent('__pitchshift:state', {
-      detail: { hookedCount: elementMap.size },
-    }));
-  }
-
-  // ── Listen for commands from content.js ───────────────────────────────────
-
-  document.addEventListener('__pitchshift:set', (e) => {
-    applyPitch(e.detail.semitones);
-    retryAll();
-    broadcastState();
-  });
-
-  document.addEventListener('__pitchshift:getstate', () => {
-    broadcastState();
-  });
-
-  // ── Intercept 1: new Audio() ──────────────────────────────────────────────
-  const NativeAudio = window.Audio;
-  function PatchedAudio(...args) {
-    const el = new NativeAudio(...args);
-    hookElement(el);
-    return el;
-  }
-  PatchedAudio.prototype = NativeAudio.prototype;
-  Object.setPrototypeOf(PatchedAudio, NativeAudio);
-  window.Audio = PatchedAudio;
-
-  // ── Intercept 2: document.createElement('audio'/'video') ─────────────────
-  const nativeCreate = Document.prototype.createElement;
-  Document.prototype.createElement = function (tag, opts) {
-    const el = nativeCreate.call(this, tag, opts);
-    if (typeof tag === 'string') {
-      const t = tag.toLowerCase();
-      if (t === 'audio' || t === 'video') hookElement(el);
-    }
-    return el;
-  };
-
-  // ── Intercept 3: element.src = '...' (SoundCloud sets src post-creation) ──
-  const srcDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-  if (srcDesc?.set) {
-    Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-      get: srcDesc.get,
-      set(val) {
-        srcDesc.set.call(this, val);
-        if (!hookedSet.has(this)) hookElement(this);
-      },
-      configurable: true,
+    document.addEventListener('__pitchshift:set', (e) => {
+        applyPitch(e.detail.semitones);
+        broadcastState();
     });
-  }
 
-  // ── Intercept 4: .play() — final safety net ────────────────────────────────
-  const nativePlay = HTMLMediaElement.prototype.play;
-  HTMLMediaElement.prototype.play = function () {
-    hookElement(this);
-    return nativePlay.call(this);
-  };
+    document.addEventListener('__pitchshift:getstate', () => {
+        broadcastState();
+    });
 
-  // ── Intercept 5: loadstart event — fires when src resolves ────────────────
-  document.addEventListener('loadstart', (e) => {
-    if (e.target instanceof HTMLMediaElement) hookElement(e.target);
-  }, true);
+    // ── Global Wake-Up Event for YouTube Autoplay Policies ──
+    const resumeContexts = () => {
+        if (fallbackCtx && fallbackCtx.state === 'suspended') fallbackCtx.resume();
+        for (const [, shifter] of elementMap) {
+            if (shifter.context && shifter.context.state === 'suspended') {
+                shifter.context.resume();
+            }
+        }
+    };
+    // Wake up on any click or keypress
+    window.addEventListener('click', resumeContexts, true);
+    window.addEventListener('keydown', resumeContexts, true);
+    window.addEventListener('play', resumeContexts, true);
 
-  retryAll();
-  console.info('[PitchShift] MAIN world ready.');
+
+    // ── Intercept 1: The AudioContext Proxy (Spotify / SoundCloud) ──
+    const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
+    if (NativeAudioContext) {
+        const origCreateMediaElementSource = NativeAudioContext.prototype.createMediaElementSource;
+
+        NativeAudioContext.prototype.createMediaElementSource = function (mediaElement) {
+            if (this.state === 'closed') return origCreateMediaElementSource.call(this, mediaElement);
+
+            console.info("[PitchShift] Intercepting website's AudioContext");
+            hookedSet.add(mediaElement);
+
+            let sourceNode;
+            try {
+                sourceNode = origCreateMediaElementSource.call(this, mediaElement);
+            } catch (err) {
+                return this.createGain();
+            }
+
+            const proxyNode = this.createGain();
+            const origConnect = sourceNode.connect;
+            const origDisconnect = sourceNode.disconnect;
+
+            origConnect.call(sourceNode, proxyNode);
+
+            sourceNode.connect = function (...args) {
+                return proxyNode.connect(...args);
+            };
+            sourceNode.disconnect = function (...args) {
+                proxyNode.disconnect(...args);
+            };
+
+            ensureWorklet(this).then(() => {
+                const shifter = new AudioWorkletNode(this, 'pitch-shifter', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [2],
+                });
+
+                const param = shifter.parameters.get('pitchFactor');
+                if (param) {
+                    if (this.state === 'suspended') param.value = currentFactor;
+                    else param.setTargetAtTime(currentFactor, this.currentTime, 0.05);
+                }
+
+                elementMap.set(mediaElement, shifter);
+
+                origDisconnect.call(sourceNode);
+                origConnect.call(sourceNode, shifter);
+                shifter.connect(proxyNode);
+
+                console.info('[PitchShift] Successfully injected into website audio graph!');
+                broadcastState();
+            }).catch(err => {
+                console.warn('[PitchShift] Failed to load worklet:', err);
+            });
+
+            return sourceNode;
+        };
+    }
+
+    // ── Intercept 2: Fallback (YouTube / Standard Media) ──
+    async function hookElement(el) {
+        if (!(el instanceof HTMLMediaElement)) return;
+        if (hookedSet.has(el)) return;
+        hookedSet.add(el);
+
+        try {
+            if (!fallbackCtx) {
+                fallbackCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            if (fallbackCtx.state === 'suspended') {
+                await fallbackCtx.resume();
+            }
+
+            await ensureWorklet(fallbackCtx);
+
+            const source = fallbackCtx.createMediaElementSource(el);
+            const shifter = new AudioWorkletNode(fallbackCtx, 'pitch-shifter', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [2],
+            });
+
+            const param = shifter.parameters.get('pitchFactor');
+            if (param) param.value = currentFactor;
+
+            source.connect(shifter);
+            shifter.connect(fallbackCtx.destination);
+            elementMap.set(el, shifter);
+            broadcastState();
+            console.info('[PitchShift] Hooked element via fallback context.');
+        } catch (err) {
+            // Fails silently if it was already hooked by the website
+        }
+    }
+
+    const nativePlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+        if (!hookedSet.has(this)) setTimeout(() => hookElement(this), 500);
+        return nativePlay.call(this);
+    };
+
+    // ── Intercept 3: Gentle SPA Scanner ──
+    setInterval(() => {
+        document.querySelectorAll('video, audio').forEach(el => {
+            if (!hookedSet.has(el)) hookElement(el);
+        });
+    }, 1000);
+
+    document.querySelectorAll('video, audio').forEach(el => hookElement(el));
+
+    console.info('[PitchShift] MAIN world ready.');
 })();
