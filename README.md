@@ -1,135 +1,68 @@
 # PitchShift — Chrome Extension
 
-Real-time audio transposition for any webpage. Built for musicians and singers
-who want to adjust playback to their key — works on YouTube, SoundCloud,
-Spotify Web, Bandcamp, and most HTML5 audio/video platforms.
+**Real-time high-definition audio transposition for the modern web.** Built for musicians, singers, and students who need to adjust playback to their specific key. PitchShift bypasses standard "robotic" browser pitch-shifting and implements a custom Phase Vocoder with high frequency resolution and formant preservation.
 
 ---
 
-## Project Structure
+## 🎵 Why PitchShift? (Motivation)
+
+Standard browser pitch shifting (the `playbackRate` method) is designed for speed, not musicality. It creates significant metallic artifacts, timing issues, and "chipmunk" effects. 
+
+**PitchShift** was engineered to solve these problems by:
+* **Maintaining Audio Fidelity:** Uses a 4096-point FFT for professional-grade frequency resolution.
+* **Bypassing Platform Restrictions:** Specifically designed to penetrate the complex audio graphs and Shadow DOM sandboxes used by **YouTube**, **Spotify**, and **SoundCloud**.
+* **Enabling Micro-tuning:** Supports 0.1 semitone precision for tuning to non-standard recordings or out-of-tune instruments.
+
+---
+
+## 🚀 Key Features
+
+* **HD Algorithm:** Re-implemented Phase Vocoder with 75% overlap and branchless math for ultra-stable, artifacts-minimized playback.
+* **Domain Isolation:** Settings are saved per-website. Your Spotify pitch stays on Spotify, while YouTube remains independent.
+* **Formant Preservation:** Toggleable "Natural Voice" mode (`Alt+Shift+F`) that shifts pitch while preserving the original resonance of the vocal tract.
+* **Keyboard Shortcuts & OSD:** Adjust pitch instantly with a sleek glassmorphic On-Screen Display (OSD) toast.
+* **Zero-Latency Bypass:** When set to 0.0, the extension enters a true-bypass mode that skips all mathematical processing for 100% original quality.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Command | Action |
+|:--- |:--- |
+| `Alt + Shift + Up` | Increase Pitch (+1.0 semitone) |
+| `Alt + Shift + Down` | Decrease Pitch (-1.0 semitone) |
+| `Alt + Shift + Right` | Fine Tune Up (+0.1 semitone) |
+| `Alt + Shift + Left` | Fine Tune Down (-0.1 semitone) |
+| `Alt + Shift + F` | **Toggle Formant Preservation** |
+| `Alt + Shift + 0` | Reset to Original Pitch |
+
+---
+
+## ⚖️ Key Highlights and Limitations
+
+### Key Highlights
+* **HD Resolution:** 4096 FFT size provides superior chord and vocal clarity.
+* **Universal Compatibility:** Works on YouTube (Shadow DOM support), Spotify (MSE/EME), and SoundCloud.
+* **Hardware Optimized:** Uses pre-allocated memory pools to prevent browser crashes and memory leaks.
+
+### Limitations
+* **Initial "Warm-up":** Due to the heavy math, the browser's JIT compiler needs 2-3 seconds of playback to fully optimize the thread performance.
+* **Mono Conversion:** Complex stereo-widening effects may be slightly narrowed due to phase reconstruction.
+* **DRM Limits:** Cannot process protected content on platforms like Netflix or Disney+ due to browser-level hardware encryption.
+
+---
+
+## 🛠 Project Structure
 
 ```
 pitch-shifter-extension/
 ├── manifest.json               # Chrome MV3 manifest
-├── background/
-│   └── service-worker.js       # Relays popup ↔ content messages
 ├── content/
-│   ├── content.js              # Intercepts media elements, manages AudioContext
-│   └── pitch-processor.js      # AudioWorklet: phase vocoder pitch shifter
+│   ├── content.js              # Domain setting manager & relay
+│   ├── injected.js             # Main-world AudioContext proxy
+│   └── pitch-processor.js      # The DSP Math Core (AudioWorklet)
 ├── popup/
-│   ├── popup.html              # Extension UI
-│   ├── popup.css               # Dark minimal styling
-│   └── popup.js                # UI logic + messaging
-└── icons/                      # Add icon16.png, icon48.png, icon128.png
+│   ├── popup.html              # Dynamic UI with micro-tuning
+│   └── popup.js                # UI State Mirroring logic
+└── icons/                      # Extension icons
 ```
-
----
-
-## How It Works
-
-### 1. Content Script (`content.js`)
-Injected at `document_start` on every page. It:
-- Scans for `<audio>` and `<video>` elements
-- Watches for dynamically added elements via `MutationObserver`
-- Intercepts the `play` event to catch lazy-loaded media (SPAs like YouTube)
-- Calls `createMediaElementSource()` to take over audio routing
-- Builds an AudioContext pipeline: **Source → PitchShifter → Destination**
-
-### 2. AudioWorklet Processor (`pitch-processor.js`)
-Runs in the browser's audio rendering thread (real-time, off the main thread).
-Implements a **Phase Vocoder** algorithm:
-
-```
-Input samples → Ring buffer
-                     ↓ (every HOP_SIZE samples)
-             Windowed FFT frame (Hann window)
-                     ↓
-         Phase deviation analysis per bin
-                     ↓
-        Pitch shift: remap bins by pitchFactor
-                     ↓
-              IFFT + Overlap-Add
-                     ↓
-              Output ring buffer
-```
-
-Key parameters:
-- `FFT_SIZE = 2048` — ~46ms analysis window at 44.1kHz
-- `HOP_SIZE = 512` — 75% overlap for smooth reconstruction
-- `pitchFactor` — AudioParam (k-rate), range 0.25–4.0
-
-### 3. Popup (`popup.js`)
-Minimal UI. Sends `SET_SEMITONES` message → background → content script.
-Converts semitones to pitch factor: `factor = 2^(semitones/12)`
-
----
-
-## Loading into Chrome
-
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right toggle)
-3. Click **Load unpacked**
-4. Select this folder (`pitch-shifter-extension/`)
-5. Navigate to a page with audio/video, press play, then open the extension
-
-> **Note:** You need placeholder icon files or Chrome will warn. Create three
-> simple PNG files named `icon16.png`, `icon48.png`, `icon128.png` in `icons/`.
-
----
-
-## Known Limitations & Next Steps
-
-### Platform Compatibility
-| Platform | Status | Notes |
-|---|---|---|
-| YouTube | ⚠️ Partial | YouTube creates its own AudioContext early; hook catches via `play` event |
-| SoundCloud | ✅ Works | Standard HTML5 audio |
-| Bandcamp | ✅ Works | Standard HTML5 audio |
-| Spotify Web | ⚠️ Partial | Uses complex MSE/EME — may need `AudioContext` patching |
-| Netflix/Disney+ | ❌ Blocked | DRM (EME) prevents audio graph manipulation |
-
-### Planned Improvements
-
-**Phase 2 — Better Compatibility**
-- [ ] Patch `AudioContext` constructor early (via injected script) to intercept
-      platforms that create their own AudioContext (YouTube, Spotify)
-- [ ] Handle `MediaSource` / `SourceBuffer` audio (MSE-based players)
-
-**Phase 3 — Algorithm Quality**
-- [ ] Increase FFT_SIZE to 4096 for better frequency resolution
-- [ ] Add psychoacoustic formant preservation (avoid "chipmunk" effect)
-- [ ] Implement WSOLA fallback for smoother transients
-
-**Phase 4 — UX**
-- [ ] Key detection (show what musical key the content is in)
-- [ ] Preset slots (save favourite transpositions per domain)
-- [ ] Fine-tuning in cents (±50 cents = ±0.5 semitones)
-- [ ] Visual pitch indicator / VU meter
-
-**Phase 5 — YouTube-specific Fix**
-YouTube intercepts AudioContext. The fix is to inject a script at `document_start`
-(before YouTube's JS runs) that patches `window.AudioContext`:
-
-```js
-// injected-early.js (inject via chrome.scripting or <script> tag)
-const OriginalAudioContext = window.AudioContext;
-window.AudioContext = function(...args) {
-  const ctx = new OriginalAudioContext(...args);
-  window.dispatchEvent(new CustomEvent('pitchshift:audiocontext', { detail: ctx }));
-  return ctx;
-};
-```
-
-Then content.js listens for that event and reuses the existing context.
-
----
-
-## Contributing / Building On
-
-The codebase is intentionally kept in plain JS with no build step so you can
-iterate fast. When the project grows, consider:
-
-- **Bundler**: Vite or esbuild (for tree-shaking, TypeScript)
-- **Testing**: Vitest for the FFT and pitch math
-- **Better FFT**: Replace the hand-rolled FFT with a WASM port of FFTW for
-  ~10× speed, enabling larger FFT_SIZE with lower latency
