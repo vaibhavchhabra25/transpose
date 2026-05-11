@@ -58,14 +58,30 @@ function createChannelState(F, H) {
     lastInputPhase: new Float32Array(F), lastOutputPhase: new Float32Array(F),
     re: new Float32Array(F), im: new Float32Array(F),
     oR: new Float32Array(F), oI: new Float32Array(F),
-    // Pre-allocated buffers for Formant Preservation to prevent GC crashes
     mags: new Float32Array((F >> 1) + 1),
-    env: new Float32Array((F >> 1) + 1)
+    env: new Float32Array((F >> 1) + 1),
+    phases: new Float32Array((F >> 1) + 1),
+    master: new Int32Array((F >> 1) + 1),
+    chroma: new Float32Array(12)
   };
 }
 
-function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants) {
-  const { re, im, inputRing, inputPos, lastInputPhase, lastOutputPhase, outputRing, oR, oI, mags, env } = s;
+function analyzeFrame(s, F, win) {
+  const { re, im, inputRing, inputPos, mags } = s;
+  const half = F >> 1;
+  for (let i = 0; i < F; i++) {
+    re[i] = inputRing[(inputPos - F + i + F * 4) % F] * win[i];
+    im[i] = 0;
+  }
+  fft(re, im, false);
+  for (let k = 0; k <= half; k++) {
+    mags[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+  }
+}
+
+// 🚀 UPGRADED: Added masterState parameter for Stereo Linking
+function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants, masterState = null) {
+  const { re, im, inputRing, inputPos, lastInputPhase, lastOutputPhase, outputRing, oR, oI, mags, env, phases, master } = s;
   const half = F >> 1;
 
   for (let i = 0; i < F; i++) {
@@ -75,18 +91,44 @@ function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants) {
 
   fft(re, im, false);
 
-  // Pre-calculate magnitudes
   for (let k = 0; k <= half; k++) {
     mags[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+    phases[k] = Math.atan2(im[k], re[k]);
   }
 
-  // 🚀 FAST SPECTRAL ENVELOPE ESTIMATOR (O(N) Moving Average)
+  // 🚀 MASTER CHANNEL (Left): Do the heavy math
+  if (!masterState) {
+    let lastValley = 0;
+    for (let k = 1; k < half; k++) {
+      if (mags[k] < mags[k - 1] && mags[k] <= mags[k + 1]) {
+        let maxMag = -1; let peakIdx = lastValley;
+        for (let i = lastValley; i <= k; i++) {
+          if (mags[i] > maxMag) { maxMag = mags[i]; peakIdx = i; }
+        }
+        for (let i = lastValley; i <= k; i++) master[i] = peakIdx;
+        lastValley = k + 1;
+      }
+    }
+    let maxMag = -1; let peakIdx = lastValley;
+    for (let i = lastValley; i <= half; i++) {
+      if (mags[i] > maxMag) { maxMag = mags[i]; peakIdx = i; }
+    }
+    for (let i = lastValley; i <= half; i++) master[i] = peakIdx;
+
+    for (let k = 0; k <= half; k++) {
+      if (master[k] === k) {
+        const phase = phases[k];
+        const expAdv = expAdvTable[k];
+        const trueFreq = expAdv + wrapPhase(phase - lastInputPhase[k] - expAdv);
+        lastOutputPhase[k] += trueFreq * pf;
+      }
+    }
+  }
+
   if (preserveFormants === 1.0) {
-    const w = 16; // Envelope window size (smoothness)
+    const w = 16;
     let sum = 0;
-    // Initial sum
     for (let i = 0; i <= w && i <= half; i++) sum += mags[i];
-    // Sliding window
     for (let k = 0; k <= half; k++) {
       env[k] = sum / (Math.min(half, k + w) - Math.max(0, k - w) + 1);
       if (k + w + 1 <= half) sum += mags[k + w + 1];
@@ -94,26 +136,50 @@ function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants) {
     }
   }
 
+  // 🚀 RENDER: Apply phase locks
   for (let k = 0; k <= half; k++) {
-    const mag = mags[k];
-    const phase = Math.atan2(im[k], re[k]);
-    const expAdv = expAdvTable[k];
-    const trueFreq = expAdv + wrapPhase(phase - lastInputPhase[k] - expAdv);
-    lastInputPhase[k] = phase;
+    let outPhase;
+
+    if (!masterState) {
+      // LEFT CHANNEL: Calculate standard outputs
+      const p = master[k];
+      if (p === k) outPhase = lastOutputPhase[k];
+      else {
+        outPhase = lastOutputPhase[p] + (phases[k] - phases[p]);
+        lastOutputPhase[k] = outPhase;
+      }
+    } else {
+      // RIGHT CHANNEL (SLAVE): Perfectly preserve original Stereo Width!
+      const phaseDiff = phases[k] - masterState.phases[k];
+      outPhase = masterState.lastOutputPhase[k] + phaseDiff;
+      lastOutputPhase[k] = outPhase;
+    }
+
+    lastInputPhase[k] = phases[k];
 
     const tk = Math.round(k * pf);
     if (tk >= 0 && tk <= half) {
-      lastOutputPhase[tk] += trueFreq * pf;
+      let finalMag = mags[k];
 
-      // 🚀 APPLY FORMANT PRESERVATION
-      let finalMag = mag;
+      // 🚀 THE VOLUME FIX: Decoupled Gain Logic
       if (preserveFormants === 1.0) {
-        // Scale the shifted magnitude so it matches the Original Envelope at the NEW frequency
-        finalMag = mag * (env[tk] / (env[k] + 1e-6));
+        // FORMANTS ON: The envelope naturally preserves the volume power.
+        const formantScale = env[tk] / (env[k] + 1e-6);
+        const safeScale = Math.max(0.1, Math.min(formantScale, 5.0));
+        finalMag = mags[k] * safeScale;
+        // Add a very tiny boost just to keep it bright
+        if (pf > 1.0) finalMag *= 1.1;
+      } else {
+        // FORMANTS OFF: Apply a stronger psychoacoustic makeup gain.
+        // If shifting up, use 'pf' (stronger) to fight the Fletcher-Munson hearing drop.
+        // If shifting down, use 'Math.sqrt' (gentler) to prevent muddy bass buildup.
+        const makeupGain = pf > 1.0 ? pf : Math.sqrt(pf);
+        finalMag *= makeupGain;
       }
 
-      oR[tk] += finalMag * Math.cos(lastOutputPhase[tk]);
-      oI[tk] += finalMag * Math.sin(lastOutputPhase[tk]);
+      oR[tk] += finalMag * Math.cos(outPhase);
+      oI[tk] += finalMag * Math.sin(outPhase);
+
       if (tk > 0 && tk < half) {
         oR[F - tk] = oR[tk];
         oI[F - tk] = -oI[tk];
@@ -123,14 +189,10 @@ function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants) {
 
   fft(oR, oI, true);
 
-  // THE FIX: The true overlap-add sum of a squared Hann window at 75% overlap is 1.5.
-  // Using 0.375 gives us exactly 1.5 (4 * 0.375), restoring 100% original volume!
   const scale = (F / H) * 0.375;
   const rLen = outputRing.length;
   const ws = s.outputWritePos;
-  for (let i = 0; i < F; i++) {
-    outputRing[(ws + i) % rLen] += (oR[i] * win[i]) / scale;
-  }
+  for (let i = 0; i < F; i++) outputRing[(ws + i) % rLen] += (oR[i] * win[i]) / scale;
   s.outputWritePos = (ws + H) % rLen;
 }
 
@@ -147,9 +209,20 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
     this.H = 1024;
     this.win = hannWindow(this.F);
     this.ch = [];
+    this.frameCounter = 0;
+
     this.expAdvTable = new Float32Array((this.F >> 1) + 1);
+    this.binToPitchClass = new Int32Array((this.F >> 1) + 1);
+
     for (let k = 0; k <= (this.F >> 1); k++) {
       this.expAdvTable[k] = TWO_PI * k * this.H / this.F;
+      if (k > 0) {
+        const freq = k * sampleRate / this.F;
+        const note = 12 * Math.log2(freq / 440) + 69;
+        let pc = Math.round(note) % 12;
+        if (pc < 0) pc += 12;
+        this.binToPitchClass[k] = pc;
+      }
     }
   }
   process(inputs, outputs, params) {
@@ -178,20 +251,41 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
 
         if (pf === 1.0) {
           od[i] = id[i];
-          if (--st.samplesUntilHop <= 0) st.samplesUntilHop = this.H;
+          if (--st.samplesUntilHop <= 0) {
+            st.samplesUntilHop = this.H;
+            analyzeFrame(st, this.F, this.win);
+          }
           st.outputRing[st.outputReadPos] = 0;
           st.outputReadPos = (st.outputReadPos + 1) % rLen;
           st.outputWritePos = (st.outputReadPos + this.F) % rLen;
         } else {
           if (--st.samplesUntilHop <= 0) {
             st.samplesUntilHop = this.H;
-            processFrame(st, this.F, this.H, this.win, pf, this.expAdvTable, formants);
+
+            // 🚀 UPGRADED: Pass the Left Channel as the Master for Stereo Linking
+            const masterState = (c === 0) ? null : this.ch[0];
+            processFrame(st, this.F, this.H, this.win, pf, this.expAdvTable, formants, masterState);
           }
           od[i] = st.outputRing[st.outputReadPos];
           st.outputRing[st.outputReadPos] = 0;
           st.outputReadPos = (st.outputReadPos + 1) % rLen;
         }
       }
+    }
+
+    // Key Detection Broadcaster
+    this.frameCounter++;
+    if (this.frameCounter % 20 === 0) {
+      let totalChroma = new Float32Array(12);
+      const minBin = Math.floor(100 * this.F / sampleRate);
+      const maxBin = Math.floor(3000 * this.F / sampleRate);
+      for (let c = 0; c < this.ch.length; c++) {
+        for (let k = minBin; k <= maxBin; k++) {
+          const compressedMag = Math.pow(this.ch[c].mags[k], 0.5);
+          totalChroma[this.binToPitchClass[k]] += compressedMag;
+        }
+      }
+      this.port.postMessage({ type: 'chroma', data: totalChroma });
     }
     return true;
   }

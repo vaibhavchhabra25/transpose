@@ -9,6 +9,77 @@
     let currentSemitones = 0;
     let currentFactor = 1.0;
     let currentFormants = 0; // NEW: 0 = Off, 1 = On
+
+    // ── Key Detection State ──
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+    const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+    let accumulatedChroma = new Float32Array(12);
+    let chromaFrames = 0;
+    let detectedKeyIndex = -1;
+    let detectedMode = '';
+    let keyHistory = []; // 🚀 NEW: Voting system history
+
+    function calculateKey(chroma) {
+        function getCorrelation(profile, testProfile) {
+            let pMean = profile.reduce((a, b) => a + b) / 12;
+            let tMean = testProfile.reduce((a, b) => a + b) / 12;
+            let num = 0, den1 = 0, den2 = 0;
+            for (let i = 0; i < 12; i++) {
+                let pDiff = profile[i] - pMean;
+                let tDiff = testProfile[i] - tMean;
+                num += pDiff * tDiff;
+                den1 += pDiff * pDiff;
+                den2 += tDiff * tDiff;
+            }
+            return num / Math.sqrt(den1 * den2);
+        }
+
+        let maxScore = -1;
+        let bestKey = -1;
+        let bestMode = '';
+
+        for (let i = 0; i < 12; i++) {
+            let shiftedChroma = [];
+            for (let j = 0; j < 12; j++) shiftedChroma.push(chroma[(j + i) % 12]);
+            let majScore = getCorrelation(MAJOR_PROFILE, shiftedChroma);
+            let minScore = getCorrelation(MINOR_PROFILE, shiftedChroma);
+
+            if (majScore > maxScore) { maxScore = majScore; bestKey = i; bestMode = 'Major'; }
+            if (minScore > maxScore) { maxScore = minScore; bestKey = i; bestMode = 'Minor'; }
+        }
+
+        if (maxScore > 0.55) {
+            // 🚀 NEW: Voting System to prevent chord-chasing
+            keyHistory.push({ key: bestKey, mode: bestMode });
+            if (keyHistory.length > 5) keyHistory.shift(); // Keep last 5 guesses
+
+            let counts = {};
+            let topCount = 0;
+            let topHash = '';
+
+            for (let h of keyHistory) {
+                let hash = h.key + '|' + h.mode;
+                counts[hash] = (counts[hash] || 0) + 1;
+                if (counts[hash] > topCount) { topCount = counts[hash]; topHash = hash; }
+            }
+
+            // Only lock in the key if 3 of the last 5 guesses agree
+            if (topCount >= 3) {
+                let parts = topHash.split('|');
+                let newKey = parseInt(parts[0]);
+                let newMode = parts[1];
+
+                if (detectedKeyIndex !== newKey || detectedMode !== newMode) {
+                    detectedKeyIndex = newKey;
+                    detectedMode = newMode;
+                    broadcastState();
+                }
+            }
+        }
+    }
+
     const elementMap = new Map();
     const hookedSet = new WeakSet();
     const readyContexts = new WeakSet();
@@ -23,6 +94,7 @@
 
             // Upgraded UI: Pill-shape, soft shadow, better glassmorphism
             Object.assign(toast.style, {
+                all: 'initial',
                 position: 'fixed',
                 bottom: '12%',
                 left: '50%',
@@ -49,19 +121,34 @@
 
         // ── Text Improvements ──
         let text = '';
+        const sign = currentSemitones > 0 ? '+' : '';
 
-        // 1. Handle the Zero State cleanly
-        if (currentSemitones === 0) {
-            text = '🎵 Original Pitch';
+        // 1. Always show Pitch Shift first
+        let pitchText = currentSemitones === 0
+            ? '🎵 Original Pitch'
+            : `🎵 Pitch: ${sign}${Number(currentSemitones).toFixed(1)} st`;
+
+        // 2. Add Key Data
+        if (detectedKeyIndex === -1) {
+            text = `${pitchText}   •   Analyzing Key...`;
         } else {
-            // 2. Add the musical note and clean formatting
-            const sign = currentSemitones > 0 ? '+' : '';
-            text = `🎵 ${sign}${Number(currentSemitones).toFixed(1)} st`;
+            const exactNote = detectedKeyIndex + currentSemitones;
+            let nearestNoteIndex = Math.round(exactNote) % 12;
+            if (nearestNoteIndex < 0) nearestNoteIndex += 12;
+
+            const cents = Math.round((exactNote - Math.round(exactNote)) * 100);
+            const noteName = NOTE_NAMES[nearestNoteIndex];
+
+            let centsStr = '';
+            if (cents > 0) centsStr = ` (+${cents}c)`;
+            if (cents < 0) centsStr = ` (${cents}c)`;
+
+            text = `${pitchText}   •   Key: ${noteName} ${detectedMode}${centsStr}`;
         }
 
-        // 3. Add the Formant indicator if active
+        // 3. Add Formants
         if (currentFormants === 1) {
-            text += '   •   🗣️ Formants On';
+            text += '   •   🗣️ On';
         }
 
         toast.textContent = text;
@@ -129,35 +216,36 @@
                 detail: {
                     hookedCount: elementMap.size,
                     semitones: currentSemitones,
-                    formants: currentFormants
+                    formants: currentFormants,
+                    baseKey: detectedKeyIndex, // 🚀 NEW
+                    baseMode: detectedMode     // 🚀 NEW
                 },
             }));
         }, 150);
     }
 
-    // ── Keyboard Shortcuts (Alt + Shift + Up/Down/Left/Right/0) ──
+    // ── Keyboard Shortcuts (Alt + Minus/Equal) ──
     window.addEventListener('keydown', (e) => {
-        if (e.altKey && e.shiftKey) {
+        // Require Alt (Option on Mac) to be held down
+        if (e.altKey) {
             let newPitch = currentSemitones;
             let newFormants = currentFormants;
+            const isFineTuning = e.shiftKey; // Shift modifies it to 0.1 steps
 
-            // Using e.code ignores OS-level Alt/Option character replacements
-            if (e.code === 'ArrowUp') {
-                newPitch += 1;
-            } else if (e.code === 'ArrowDown') {
-                newPitch -= 1;
-            } else if (e.code === 'ArrowRight') {
-                newPitch += 0.1;
-            } else if (e.code === 'ArrowLeft') {
-                newPitch -= 0.1;
+            // We use e.code to grab the physical key location
+            if (e.code === 'Equal') { // The '+' / '=' key
+                newPitch += isFineTuning ? 0.1 : 1.0;
+            } else if (e.code === 'Minus') { // The '-' / '_' key
+                newPitch -= isFineTuning ? 0.1 : 1.0;
             } else if (e.code === 'Digit0' || e.code === 'Numpad0') {
-                newPitch = 0;
-            } else if (e.code === 'KeyF') { // Toggle Formants
-                newFormants = currentFormants === 0 ? 1 : 0;
+                newPitch = 0; // Reset to original
+            } else if (e.code === 'KeyP') {
+                newFormants = currentFormants === 0 ? 1 : 0; // P for Preserve Formants
             } else {
-                return;
+                return; // Not our keys, let the browser handle it
             }
-            e.preventDefault();
+
+            e.preventDefault(); // Stop the browser from doing anything else
 
             newPitch = Math.max(-12, Math.min(12, newPitch));
             newPitch = Math.round(newPitch * 10) / 10;
@@ -230,6 +318,20 @@
                     numberOfOutputs: 1,
                     outputChannelCount: [2],
                 });
+                shifter.port.onmessage = (e) => {
+                    if (e.data.type === 'chroma') {
+                        for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
+                        chromaFrames++;
+                        // Run every ~7 seconds
+                        if (chromaFrames > 15) {
+                            calculateKey(accumulatedChroma);
+                            // 🚀 NEW: Slow decay (0.85 instead of 0.5). 
+                            // This remembers the global song history, ignoring temporary chords!
+                            for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
+                            chromaFrames = 0;
+                        }
+                    }
+                };
 
                 const param = shifter.parameters.get('pitchFactor');
                 if (param) {
@@ -267,6 +369,20 @@
                 numberOfOutputs: 1,
                 outputChannelCount: [2],
             });
+            shifter.port.onmessage = (e) => {
+                if (e.data.type === 'chroma') {
+                    for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
+                    chromaFrames++;
+                    // Run every ~7 seconds
+                    if (chromaFrames > 15) {
+                        calculateKey(accumulatedChroma);
+                        // 🚀 NEW: Slow decay (0.85 instead of 0.5). 
+                        // This remembers the global song history, ignoring temporary chords!
+                        for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
+                        chromaFrames = 0;
+                    }
+                }
+            };
 
             const param = shifter.parameters.get('pitchFactor');
             if (param) param.value = currentFactor;
@@ -317,8 +433,22 @@
     }
 
     setInterval(() => {
+        // 1. Prune dead elements (Ghost Nodes)
+        for (const [el, shifter] of elementMap) {
+            if (!el.isConnected) {
+                console.info('[PitchShift] Pruning disconnected element');
+                try {
+                    shifter.disconnect();
+                    // If the shifter has an input source, disconnect that too
+                    if (shifter.numberOfInputs > 0) shifter.disconnect();
+                } catch (e) { }
+                elementMap.delete(el);
+            }
+        }
+
+        // 2. Scan for new ones (your existing logic)
         scanForMedia(document.body);
-    }, 1000);
+    }, 2000);
 
     scanForMedia(document.body);
 

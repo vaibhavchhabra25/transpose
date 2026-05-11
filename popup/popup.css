@@ -131,12 +131,21 @@ header {
 .semitone-value.down { color: #df7575; text-shadow: 0 0 20px rgba(223, 117, 117, 0.3); }
 
 .note-label {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 6px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  min-height: 16px;
+  font-family: var(--font-ui);
+  font-size: 14px; /* Increased from 11px */
+  color: var(--accent); /* Lights up with your amber accent */
+  background: var(--accent-dim); /* Soft amber background */
+  border: 1px solid rgba(232, 160, 48, 0.3); /* Subtle border glow */
+  border-radius: 8px; /* Clean rounded edges */
+  padding: 6px 14px;
+  margin-top: 12px;
+  font-weight: 700; /* Make it bold */
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2); /* Deepens the UI */
+  min-height: 30px;
 }
 
 /* ── Controls ── */
@@ -206,6 +215,57 @@ header {
 }
 
 .btn-reset:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── Formant Control ── */
+.formant-control {
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.secondary-btn {
+  width: 100%;
+  height: 32px;
+  font-family: var(--font-ui); /* UI font, not monospace */
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.secondary-btn strong {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text);
+  transition: color 0.2s;
+}
+
+.formant-icon {
+  font-size: 13px;
+  filter: grayscale(1);
+  opacity: 0.5;
+  transition: all 0.2s;
+}
+
+/* ── Formant Active State ── */
+.secondary-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.secondary-btn.active strong {
+  color: var(--accent);
+}
+
+.secondary-btn.active .formant-icon {
+  filter: grayscale(0);
+  opacity: 1;
+}
 
 /* ── Key hints ── */
 

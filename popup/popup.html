@@ -1,14 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PitchShift</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
+
 <body>
   <div class="shell">
 
@@ -30,10 +34,8 @@
 
     <!-- Controls -->
     <div class="controls">
-      <!-- Coarse: ±1 semitone -->
       <button class="btn btn-large" id="btnMinus" aria-label="Down 1 semitone">−1</button>
 
-      <!-- Fine: ±0.5 semitone (for microtonal tweaks) -->
       <div class="fine-controls">
         <button class="btn btn-small" id="btnMinusHalf" aria-label="Down half semitone">−½</button>
         <button class="btn btn-reset" id="btnReset" aria-label="Reset to 0">↺</button>
@@ -43,10 +45,17 @@
       <button class="btn btn-large" id="btnPlus" aria-label="Up 1 semitone">+1</button>
     </div>
 
+    <div class="formant-control">
+      <button id="btnFormant" class="btn secondary-btn">
+        <span class="formant-icon" id="formantIcon">🗣️</span>
+        Formant Preservation: <strong id="formantStatus">OFF</strong>
+      </button>
+    </div>
+
     <!-- Keyboard shortcut hints -->
     <div class="key-hints">
-      <span class="key">↑↓</span> semitone &nbsp;|&nbsp;
-      <span class="key">Shift+↑↓</span> half
+      <span class="key">Alt</span> + <span class="key">−</span> / <span class="key">+</span> shift pitch &nbsp;|&nbsp;
+      Hold <span class="key">Shift</span> for fine tuning
     </div>
 
     <!-- Slider for quick sweep -->
@@ -62,4 +71,5 @@
   </div>
   <script src="popup.js"></script>
 </body>
+
 </html>

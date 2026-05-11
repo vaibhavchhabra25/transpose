@@ -1,6 +1,6 @@
-# PitchShift — Chrome Extension
+# PitchShift — Chrome Extension v1.1
 
-**Real-time high-definition audio transposition for the modern web.** Built for musicians, singers, and students who need to adjust playback to their specific key. PitchShift bypasses standard "robotic" browser pitch-shifting and implements a custom Phase Vocoder with high frequency resolution and formant preservation.
+**Real-time high-definition audio transposition for the modern web.** Built for musicians, singers, and students who need to adjust playback to their specific key without sacrificing audio quality. PitchShift implements a professional-grade **Phase-Locked Vocoder** that outperforms standard browser pitch shifting.
 
 ---
 
@@ -10,45 +10,40 @@ Standard browser pitch shifting (the `playbackRate` method) is designed for spee
 
 **PitchShift** was engineered to solve these problems by:
 * **Maintaining Audio Fidelity:** Uses a 4096-point FFT for professional-grade frequency resolution.
+* **Preserving Stereo Image:** Unlike most shifters that collapse audio to mono, our **Stereo Phase-Locking** maintains the original soundstage width.
+* **AI-Powered Insights:** Real-time key detection helps musicians identify the current tonality of any track instantly.
 * **Bypassing Platform Restrictions:** Specifically designed to penetrate the complex audio graphs and Shadow DOM sandboxes used by **YouTube**, **Spotify**, and **SoundCloud**.
-* **Enabling Micro-tuning:** Supports 0.1 semitone precision for tuning to non-standard recordings or out-of-tune instruments.
 
 ---
 
 ## 🚀 Key Features
 
-* **HD Algorithm:** Re-implemented Phase Vocoder with 75% overlap and branchless math for ultra-stable, artifacts-minimized playback.
+* **Stereo Phase-Locked Algorithm:** Upgraded "Master/Slave" DSP engine ensures left/right phase coherence, keeping the audio wide and immersive.
+* **AI Key Detection:** Dynamic real-time analysis of musical keys using a modified Krumhansl-Schmuckler algorithm with transient-noise filtering.
+* **Dynamic Makeup Gain:** Automatically compensates for psychoacoustic volume loss when pitching up, ensuring consistent loudness.
+* **Formant Preservation:** Toggleable "Natural Voice" mode that shifts pitch while preserving the original resonance of the vocal tract.
+* **Identity Phase-Locking:** Minimizes "watery" artifacts by locking harmonics to their fundamental peaks.
 * **Domain Isolation:** Settings are saved per-website. Your Spotify pitch stays on Spotify, while YouTube remains independent.
-* **Formant Preservation:** Toggleable "Natural Voice" mode (`Alt+Shift+F`) that shifts pitch while preserving the original resonance of the vocal tract.
-* **Keyboard Shortcuts & OSD:** Adjust pitch instantly with a sleek glassmorphic On-Screen Display (OSD) toast.
-* **Zero-Latency Bypass:** When set to 0.0, the extension enters a true-bypass mode that skips all mathematical processing for 100% original quality.
 
 ---
 
-## ⌨️ Keyboard Shortcuts
+## ⌨️ Keyboard Shortcuts (v1.1 Layout)
 
-| Command | Action |
-|:--- |:--- |
-| `Alt + Shift + Up` | Increase Pitch (+1.0 semitone) |
-| `Alt + Shift + Down` | Decrease Pitch (-1.0 semitone) |
-| `Alt + Shift + Right` | Fine Tune Up (+0.1 semitone) |
-| `Alt + Shift + Left` | Fine Tune Down (-0.1 semitone) |
-| `Alt + Shift + F` | **Toggle Formant Preservation** |
-| `Alt + Shift + 0` | Reset to Original Pitch |
+### Global Shortcuts (Anywhere on the page)
 
----
+| Command | Shortcut | Action |
+|:--- |:--- |:--- |
+| **Increase Pitch** | `Alt + =` | Coarse tune up (+1.0 semitone) |
+| **Decrease Pitch** | `Alt + -` | Coarse tune down (-1.0 semitone) |
+| **Fine Tune Up** | `Alt + Shift + =` | Micro-tune (+0.1 semitone) |
+| **Fine Tune Down** | `Alt + Shift + -` | Micro-tune (-0.1 semitone) |
+| **Reset to Original** | `Alt + 0` | Instantly return to 0.0 |
+| **Toggle Formants** | `Alt + P` | Preserve original vocal timbre |
 
-## ⚖️ Key Highlights and Limitations
-
-### Key Highlights
-* **HD Resolution:** 4096 FFT size provides superior chord and vocal clarity.
-* **Universal Compatibility:** Works on YouTube (Shadow DOM support), Spotify (MSE/EME), and SoundCloud.
-* **Hardware Optimized:** Uses pre-allocated memory pools to prevent browser crashes and memory leaks.
-
-### Limitations
-* **Initial "Warm-up":** Due to the heavy math, the browser's JIT compiler needs 2-3 seconds of playback to fully optimize the thread performance.
-* **Mono Conversion:** Complex stereo-widening effects may be slightly narrowed due to phase reconstruction.
-* **DRM Limits:** Cannot process protected content on platforms like Netflix or Disney+ due to browser-level hardware encryption.
+### Popup Shortcuts (When focused)
+* `+` / `-` : Coarse adjustment (±1.0)
+* `←` / `→` : Fine-tuning (±0.1)
+* `Alt + 0` : Reset
 
 ---
 
@@ -59,10 +54,24 @@ pitch-shifter-extension/
 ├── manifest.json               # Chrome MV3 manifest
 ├── content/
 │   ├── content.js              # Domain setting manager & relay
-│   ├── injected.js             # Main-world AudioContext proxy
-│   └── pitch-processor.js      # The DSP Math Core (AudioWorklet)
+│   ├── injected.js             # Main-world AudioContext proxy & Key Detection
+│   └── pitch-processor.js      # DSP Core: Phase-Locked Vocoder & Chroma Extraction
 ├── popup/
-│   ├── popup.html              # Dynamic UI with micro-tuning
-│   └── popup.js                # UI State Mirroring logic
-└── icons/                      # Extension icons
+│   ├── popup.html              # Amber-themed UI with Key-Badge
+│   └── popup.js                # State mirroring & shortcut sync
+└── icons/                      # Extension icons (16, 32, 48, 128px)
 ```
+
+---
+
+## ⚖️ Key Highlights and Technical Notes
+
+### Highlights
+* **HD Resolution:** 4096 FFT size provides superior chord and vocal clarity.
+* **True Stereo:** Phase-coherent processing prevents mono-collapse.
+* **Hardware Optimized:** Uses pre-allocated memory pools to prevent browser crashes.
+
+### Technical Notes
+* **Initial Analysis:** Key detection requires ~4-5 seconds of audio to lock onto the global song key.
+* **True Bypass:** When set to 0.0, the engine uses a zero-latency direct route but continues frequency analysis in the background.
+* **DRM Limits:** Cannot process hardware-encrypted streams (e.g., Netflix) due to browser security.
