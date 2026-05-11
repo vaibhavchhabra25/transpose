@@ -284,19 +284,22 @@
     window.addEventListener('play', resumeContexts, true);
 
     const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
+    // ── 1. The Native Hook (Prioritizing Stability) ──
     if (NativeAudioContext) {
         const origCreateMediaElementSource = NativeAudioContext.prototype.createMediaElementSource;
 
         NativeAudioContext.prototype.createMediaElementSource = function (mediaElement) {
             if (this.state === 'closed') return origCreateMediaElementSource.call(this, mediaElement);
 
+            // Mark and track
+            mediaElement.__isNativeHooked = true;
             hookedSet.add(mediaElement);
 
             let sourceNode;
             try {
                 sourceNode = origCreateMediaElementSource.call(this, mediaElement);
             } catch (err) {
-                return this.createGain();
+                return this.createGain(); 
             }
 
             const proxyNode = this.createGain();
@@ -305,28 +308,21 @@
 
             origConnect.call(sourceNode, proxyNode);
 
-            sourceNode.connect = function (...args) {
-                return proxyNode.connect(...args);
-            };
-            sourceNode.disconnect = function (...args) {
-                proxyNode.disconnect(...args);
-            };
+            sourceNode.connect = function (...args) { return proxyNode.connect(...args); };
+            sourceNode.disconnect = function (...args) { proxyNode.disconnect(...args); };
 
             ensureWorklet(this).then(() => {
                 const shifter = new AudioWorkletNode(this, 'pitch-shifter', {
-                    numberOfInputs: 1,
-                    numberOfOutputs: 1,
-                    outputChannelCount: [2],
+                    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
                 });
+
+                // Attach message listener for Key Detection
                 shifter.port.onmessage = (e) => {
                     if (e.data.type === 'chroma') {
                         for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
                         chromaFrames++;
-                        // Run every ~7 seconds
                         if (chromaFrames > 15) {
                             calculateKey(accumulatedChroma);
-                            // 🚀 NEW: Slow decay (0.85 instead of 0.5). 
-                            // This remembers the global song history, ignoring temporary chords!
                             for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
                             chromaFrames = 0;
                         }
@@ -334,10 +330,7 @@
                 };
 
                 const param = shifter.parameters.get('pitchFactor');
-                if (param) {
-                    if (this.state === 'suspended') param.value = currentFactor;
-                    else param.setTargetAtTime(currentFactor, this.currentTime, 0.05);
-                }
+                if (param) param.value = currentFactor;
 
                 elementMap.set(mediaElement, shifter);
 
@@ -345,7 +338,7 @@
                 origConnect.call(sourceNode, shifter);
                 shifter.connect(proxyNode);
                 broadcastState();
-            }).catch(err => console.warn(err));
+            }).catch(err => console.error('[PitchShift] Worklet Fail:', err));
 
             return sourceNode;
         };
@@ -353,7 +346,12 @@
 
     async function hookElement(el) {
         if (!(el instanceof HTMLMediaElement)) return;
-        if (hookedSet.has(el)) return;
+        if (el.__isNativeHooked || hookedSet.has(el)) return;
+
+        // 🚀 NEW: Crucial for Spotify/Cross-domain audio
+        if (!el.crossOrigin) {
+            el.crossOrigin = "anonymous";
+        }
         hookedSet.add(el);
 
         try {
@@ -362,6 +360,9 @@
             }
 
             await ensureWorklet(fallbackCtx);
+
+            // Final check: did Spotify hook it while we were waiting for the worklet?
+            if (el.__isNativeHooked) return;
 
             const source = fallbackCtx.createMediaElementSource(el);
             const shifter = new AudioWorkletNode(fallbackCtx, 'pitch-shifter', {
@@ -408,47 +409,78 @@
     function scanForMedia(root) {
         if (!root) return;
 
-        if (root instanceof HTMLMediaElement && !hookedSet.has(root)) {
-            hookElement(root);
-        }
+        // 1. Find all potential audio/video tags
+        const elements = root.querySelectorAll ? root.querySelectorAll('video, audio') : [];
 
-        if (root.querySelectorAll) {
-            root.querySelectorAll('video, audio').forEach(el => {
-                if (!hookedSet.has(el)) hookElement(el);
-            });
-        }
+        elements.forEach(el => {
+            // Only attempt to hook if:
+            // - It's not already hooked
+            // - It hasn't been claimed by Spotify's native AudioContext
+            // - It actually has audio data (src)
+            if (!hookedSet.has(el) && !el.__isNativeHooked) {
+                if (el.src || el.srcObject || el.querySelector('source')) {
+                    hookElement(el);
+                }
+            }
+        });
 
+        // 2. Handle Shadow DOM (for sites like YouTube)
         if (root.shadowRoot) {
             scanForMedia(root.shadowRoot);
         }
 
+        // 3. Recursive check for custom components
         const children = root.children;
         if (children) {
             for (let i = 0; i < children.length; i++) {
-                if (children[i].shadowRoot) {
-                    scanForMedia(children[i].shadowRoot);
-                }
+                if (children[i].shadowRoot) scanForMedia(children[i].shadowRoot);
             }
         }
     }
 
+    const lastTimeMap = new Map();
+    const disconnectionTimes = new Map(); // ⬅️ The missing variable!
+
     setInterval(() => {
-        // 1. Prune dead elements (Ghost Nodes)
+        const now = Date.now();
+
         for (const [el, shifter] of elementMap) {
+            // Check if the audio is actually "alive" (heartbeat check)
+            const isPlaying = !el.paused && !el.ended && el.currentTime > 0;
+            
+            // Check for progress
+            const lastTime = lastTimeMap.get(el) || 0;
+            const isMoving = el.currentTime !== lastTime;
+            if (isPlaying) lastTimeMap.set(el, el.currentTime);
+
             if (!el.isConnected) {
-                console.info('[PitchShift] Pruning disconnected element');
-                try {
-                    shifter.disconnect();
-                    // If the shifter has an input source, disconnect that too
-                    if (shifter.numberOfInputs > 0) shifter.disconnect();
-                } catch (e) { }
-                elementMap.delete(el);
+                // 🚀 THE ZOMBIE CHECK:
+                // If it's disconnected from DOM but STILL playing music, 
+                // DO NOT PRUNE. Spotify does this during track transitions.
+                if (isPlaying && isMoving) {
+                    continue; 
+                }
+
+                if (!disconnectionTimes.has(el)) {
+                    disconnectionTimes.set(el, now);
+                }
+                
+                // Only prune if it's disconnected AND silent/paused for > 10 seconds
+                if (now - disconnectionTimes.get(el) > 10000) {
+                    console.info('[PitchShift] Pruning truly dead element.');
+                    try { shifter.disconnect(); } catch (e) {}
+                    elementMap.delete(el);
+                    hookedSet.delete(el);
+                    disconnectionTimes.delete(el);
+                    lastTimeMap.delete(el);
+                }
+            } else {
+                disconnectionTimes.delete(el);
             }
         }
 
-        // 2. Scan for new ones (your existing logic)
         scanForMedia(document.body);
-    }, 2000);
+    }, 3000);
 
     scanForMedia(document.body);
 
