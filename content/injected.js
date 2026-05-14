@@ -270,10 +270,12 @@
     });
 
     const resumeContexts = () => {
-        if (fallbackCtx && fallbackCtx.state === 'suspended') fallbackCtx.resume();
+        if (fallbackCtx && fallbackCtx.state === 'suspended') {
+            fallbackCtx.resume().catch(() => {}); // 🚀 Catch and ignore browser blocks
+        }
         for (const [, shifter] of elementMap) {
             if (shifter.context && shifter.context.state === 'suspended') {
-                shifter.context.resume();
+                shifter.context.resume().catch(() => {}); // 🚀 Catch and ignore browser blocks
             }
         }
     };
