@@ -222,44 +222,38 @@ init();
 let currentChordKey = -1;
 let currentChordMode = '';
 
-// Live Data Polling
-setInterval(() => {
+// 🚀 THE FIX: Cleaned up sync loop that uses your existing render() logic
+function syncWithEngine() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0]) return;
     chrome.tabs.sendMessage(tabs[0].id, { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } }, (response) => {
+      // If the bridge fails, do nothing. Don't overwrite the UI.
       if (chrome.runtime.lastError || !response || !response.ok) return;
 
-      // Update "No Media" text immediately
-      const mediaStatus = document.querySelector('.status-text, .footer-text, p:last-of-type');
-      if (mediaStatus) {
-        mediaStatus.textContent = response.hookedCount > 0
-          ? 'Connected to ' + response.hookedCount + ' media element(s)'
-          : 'No media on this page (press play)';
-      }
-
-      // Force Key Badge to render immediately
+      // 1. Sync global variables from the engine
+      if (response.semitones !== undefined) semitones = response.semitones;
+      if (response.formants !== undefined) formants = response.formants;
       if (response.baseKey !== undefined) {
-        // Assuming baseKeyIndex and baseMode are declared at the top of your file
         baseKeyIndex = response.baseKey;
         baseMode = response.baseMode;
+      }
 
-        const badge = document.getElementById('key-badge');
-        if (badge) {
-          if (baseKeyIndex === -1) {
-            badge.textContent = "Analyzing song key...";
-          } else {
-            const exactNote = baseKeyIndex + semitones;
-            let nearestNoteIndex = Math.round(exactNote) % 12;
-            if (nearestNoteIndex < 0) nearestNoteIndex += 12;
+      // 🚀 THE MAGIC: Just call render! 
+      // It already perfectly targets `id="noteLabel"` and formats the text.
+      render();
 
-            // NOTE_NAMES will now successfully translate the number to a letter!
-            badge.textContent = NOTE_NAMES[nearestNoteIndex] + " " + baseMode;
-          }
+      // 2. Status Text
+      const { hookedCount } = response;
+      if (hookedCount !== undefined) {
+        if (hookedCount > 0) {
+          setStatus('active', `Connected to ${hookedCount} media element${hookedCount > 1 ? 's' : ''}`);
+        } else {
+          setStatus('idle', 'No media on this page (press play)');
         }
       }
 
-      // Update Live Chord
-      if (response.chordKey !== undefined && (response.chordKey !== currentChordKey || response.chordMode !== currentChordMode)) {
+      // 3. Live Chord
+      if (response.chordKey !== undefined) {
         currentChordKey = response.chordKey;
         currentChordMode = response.chordMode;
 
@@ -271,12 +265,14 @@ setInterval(() => {
             const exactNote = currentChordKey + semitones;
             let nearestNoteIndex = Math.round(exactNote) % 12;
             if (nearestNoteIndex < 0) nearestNoteIndex += 12;
-
-            // NOTE_NAMES will now successfully translate the number to a letter!
             chordEl.textContent = NOTE_NAMES[nearestNoteIndex] + " " + currentChordMode;
           }
         }
       }
     });
   });
-}, 500);
+}
+
+// Fetch instantly on open, then poll every 500ms
+syncWithEngine();
+setInterval(syncWithEngine, 500);

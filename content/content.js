@@ -1,22 +1,16 @@
 // content/content.js  —  isolated world
-// Only job: relay chrome.runtime messages from the popup into CustomEvents
-// that injected.js (MAIN world) can hear, and relay responses back.
-// Never touches audio elements directly — all audio lives in MAIN world.
 
 document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/pitch-processor.js');
 
 (function () {
   'use strict';
-
   const host = window.location.hostname;
 
-  // 1. Auto-load saved pitch for this specific domain on startup
+  // Auto-load saved pitch
   chrome.storage.local.get([`pitch_${host}`, `formants_${host}`], (res) => {
     const savedPitch = res[`pitch_${host}`] || 0;
     const savedFormants = res[`formants_${host}`] || 0;
-
     if (savedPitch !== 0 || savedFormants !== 0) {
-      // Give injected.js time to attach its listeners, then push the saved state
       setTimeout(() => {
         document.dispatchEvent(new CustomEvent('__pitchshift:set', {
           detail: { semitones: savedPitch, formants: savedFormants }
@@ -25,7 +19,7 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
     }
   });
 
-  // 2. Save pitch for this domain when changed via shortcuts
+  // Save pitch changes
   document.addEventListener('__pitchshift:save', (e) => {
     chrome.storage.local.set({
       [`pitch_${host}`]: e.detail.semitones,
@@ -33,10 +27,29 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
     });
   });
 
-  // 3. Relay Popup <--> Injected World
+  // Relay Popup <--> Injected World
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    const action = msg.payload ? msg.payload.type : msg.type;
 
-    if (msg.type === 'SET_SEMITONES') {
+    if (action === 'SET_SEMITONES') {
+      const semitones = msg.payload ? msg.payload.semitones : msg.semitones;
+      const formants = msg.payload ? msg.payload.formants : msg.formants;
+
+      document.dispatchEvent(new CustomEvent('__pitchshift:set', {
+        detail: { semitones: semitones, formants: formants },
+      }));
+
+      chrome.storage.local.set({
+        [`pitch_${host}`]: semitones,
+        [`formants_${host}`]: formants
+      });
+
+      sendResponse({ ok: true });
+      return false; 
+    }
+
+    if (action === 'GET_STATE') {
+      // 🚀 THE FIX: The Locked Async Bridge
       const onState = (e) => {
         document.removeEventListener('__pitchshift:state', onState);
         sendResponse({
@@ -50,53 +63,23 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
           chordMode: e.detail.chordMode
         });
       };
+      
+      // 1. Start listening for the answer
       document.addEventListener('__pitchshift:state', onState);
-
-      document.dispatchEvent(new CustomEvent('__pitchshift:set', {
-        detail: {
-          semitones: msg.semitones,
-          formants: msg.formants
-        },
-      }));
-
-      // Save both locally for this domain
-      chrome.storage.local.set({
-        [`pitch_${host}`]: msg.semitones,
-        [`formants_${host}`]: msg.formants
-      });
-
-      setTimeout(() => {
-        document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: false }); // Failsafe
-      }, 800);
-      return true;
-    }
-
-    if (msg.type === 'GET_STATE') {
-      const onState = (e) => {
-        document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({
-          ok: true,
-          hookedCount: e.detail.hookedCount, // 🚀 FIXED: Added the missing hookedCount!
-          semitones: e.detail.semitones,
-          formants: e.detail.formants,
-          baseKey: e.detail.baseKey,
-          baseMode: e.detail.baseMode,
-          chordKey: e.detail.chordKey,
-          chordMode: e.detail.chordMode
-        });
-      };
-
-      document.addEventListener('__pitchshift:state', onState);
+      
+      // 2. Ask the engine for the data
       document.dispatchEvent(new CustomEvent('__pitchshift:getstate'));
 
+      // 3. Failsafe timeout to prevent hanging UI
       setTimeout(() => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: false }); // Failsafe
-      }, 800);
-      return true;
+        sendResponse({ ok: false });
+      }, 300);
+
+      // 4. Return TRUE tells Chrome: "Wait for sendResponse, don't close!"
+      return true; 
     }
   });
 
-  console.info('[PitchShift] Content script ready.');
+  console.info('[PitchShift] Content script ready. Async Bridge enabled.');
 })();

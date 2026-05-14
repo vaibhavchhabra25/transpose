@@ -154,6 +154,36 @@
         }
     }
 
+    // 🚀 THE FIX: The Master Reset Switch
+    // Clears all buffers and resets pitch to 0 when a new song starts
+    function resetEngine() {
+        console.info('[PitchShift] Track change detected. Resetting engine.');
+
+        // 1. Flush the Audio Math Buffers
+        accumulatedChroma.fill(0);
+        smoothedChordChroma.fill(0);
+        chromaFrames = 0;
+
+        detectedKeyIndex = -1;
+        detectedMode = '';
+        keyHistory = [];
+
+        currentChordIndex = -1;
+        currentChordMode = '';
+        chordHistory = [];
+
+        // 2. Reset the Pitch
+        applyPitch(0, currentFormants);
+
+        // 3. Save the reset state to the browser so it doesn't reload the old pitch
+        document.dispatchEvent(new CustomEvent('__pitchshift:save', {
+            detail: { semitones: 0, formants: currentFormants }
+        }));
+
+        // 4. Force the UI to repaint
+        broadcastState();
+    }
+
     const elementMap = new Map();
     const hookedSet = new WeakSet();
     const readyContexts = new WeakSet();
@@ -342,9 +372,8 @@
     });
 
     document.addEventListener('__pitchshift:getstate', () => {
-        // 🚀 THE FIX: A 10ms micro-delay. 
-        // This bypasses Chrome's security bug, allowing the CustomEvent 
-        // to safely cross from the Main World back to the Isolated World!
+        // 🚀 THE FIX: A 20ms delay ensures the content script has completely 
+        // locked the channel open before we send the payload back.
         setTimeout(() => {
             document.dispatchEvent(new CustomEvent('__pitchshift:state', {
                 detail: {
@@ -357,7 +386,7 @@
                     chordMode: currentChordMode
                 },
             }));
-        }, 10);
+        }, 20);
     });
 
     const resumeContexts = () => {
@@ -386,6 +415,10 @@
 
             // Mark and track
             mediaElement.__isNativeHooked = true;
+
+            // 🚀 Attach the reset listener
+            mediaElement.addEventListener('emptied', resetEngine);
+
             hookedSet.add(mediaElement);
 
             let sourceNode;
@@ -450,10 +483,14 @@
         if (!(el instanceof HTMLMediaElement)) return;
         if (el.__isNativeHooked || hookedSet.has(el)) return;
 
-        // 🚀 NEW: Crucial for Spotify/Cross-domain audio
+        // Crucial for Spotify/Cross-domain audio
         if (!el.crossOrigin) {
             el.crossOrigin = "anonymous";
         }
+
+        // 🚀 Attach the reset listener
+        el.addEventListener('emptied', resetEngine);
+
         hookedSet.add(el);
 
         try {
