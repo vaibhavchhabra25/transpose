@@ -214,14 +214,29 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
     this.expAdvTable = new Float32Array((this.F >> 1) + 1);
     this.binToPitchClass = new Int32Array((this.F >> 1) + 1);
 
+    // 🚀 UPGRADED: Fractional Binning Arrays
+    this.binWeights = new Float32Array((this.F >> 1) + 1);
+    this.binPitch1 = new Int32Array((this.F >> 1) + 1);
+    this.binPitch2 = new Int32Array((this.F >> 1) + 1);
+
     for (let k = 0; k <= (this.F >> 1); k++) {
       this.expAdvTable[k] = TWO_PI * k * this.H / this.F;
+
       if (k > 0) {
         const freq = k * sampleRate / this.F;
-        const note = 12 * Math.log2(freq / 440) + 69;
-        let pc = Math.round(note) % 12;
-        if (pc < 0) pc += 12;
-        this.binToPitchClass[k] = pc;
+        const note = 12 * Math.log2(freq / 440.0) + 69;
+
+        const lowerNote = Math.floor(note);
+        const frac = note - lowerNote; // A value between 0.0 and 1.0
+
+        let p1 = lowerNote % 12;
+        let p2 = (lowerNote + 1) % 12;
+        if (p1 < 0) p1 += 12;
+        if (p2 < 0) p2 += 12;
+
+        this.binPitch1[k] = p1;
+        this.binPitch2[k] = p2;
+        this.binWeights[k] = frac; // Weight for the higher note
       }
     }
   }
@@ -279,10 +294,15 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
       let totalChroma = new Float32Array(12);
       const minBin = Math.floor(100 * this.F / sampleRate);
       const maxBin = Math.floor(3000 * this.F / sampleRate);
+
       for (let c = 0; c < this.ch.length; c++) {
         for (let k = minBin; k <= maxBin; k++) {
           const compressedMag = Math.pow(this.ch[c].mags[k], 0.5);
-          totalChroma[this.binToPitchClass[k]] += compressedMag;
+
+          // 🚀 UPGRADED: Distribute energy based on how close the frequency is to A440
+          const w = this.binWeights[k];
+          totalChroma[this.binPitch1[k]] += compressedMag * (1.0 - w);
+          totalChroma[this.binPitch2[k]] += compressedMag * w;
         }
       }
       this.port.postMessage({ type: 'chroma', data: totalChroma });

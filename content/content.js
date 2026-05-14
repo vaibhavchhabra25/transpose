@@ -35,10 +35,20 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
 
   // 3. Relay Popup <--> Injected World
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+
     if (msg.type === 'SET_SEMITONES') {
       const onState = (e) => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: e.detail.hookedCount, semitones: e.detail.semitones });
+        sendResponse({
+          ok: true,
+          hookedCount: e.detail.hookedCount,
+          semitones: e.detail.semitones,
+          formants: e.detail.formants,
+          baseKey: e.detail.baseKey,
+          baseMode: e.detail.baseMode,
+          chordKey: e.detail.chordKey,
+          chordMode: e.detail.chordMode
+        });
       };
       document.addEventListener('__pitchshift:state', onState);
 
@@ -57,7 +67,7 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
 
       setTimeout(() => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: 0 });
+        sendResponse({ ok: false }); // Failsafe
       }, 800);
       return true;
     }
@@ -67,19 +77,22 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
         document.removeEventListener('__pitchshift:state', onState);
         sendResponse({
           ok: true,
-          hookedCount: e.detail.hookedCount,
+          hookedCount: e.detail.hookedCount, // 🚀 FIXED: Added the missing hookedCount!
           semitones: e.detail.semitones,
           formants: e.detail.formants,
-          baseKey: e.detail.baseKey,   // 🚀 ADDED: Forward the key
-          baseMode: e.detail.baseMode  // 🚀 ADDED: Forward the mode
+          baseKey: e.detail.baseKey,
+          baseMode: e.detail.baseMode,
+          chordKey: e.detail.chordKey,
+          chordMode: e.detail.chordMode
         });
       };
+
       document.addEventListener('__pitchshift:state', onState);
       document.dispatchEvent(new CustomEvent('__pitchshift:getstate'));
 
       setTimeout(() => {
         document.removeEventListener('__pitchshift:state', onState);
-        sendResponse({ ok: true, hookedCount: 0, semitones: 0 });
+        sendResponse({ ok: false }); // Failsafe
       }, 800);
       return true;
     }

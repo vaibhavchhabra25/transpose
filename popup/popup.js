@@ -219,20 +219,64 @@ function init() {
 
 init();
 
-// ─── Live Data Polling ────────────────────────────────────────────────────
-// Continuously ask the tab if it has finished analyzing the song key
-setInterval(() => {
-  chrome.runtime.sendMessage(
-    { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } },
-    (response) => {
-      if (chrome.runtime.lastError || !response?.ok) return;
+let currentChordKey = -1;
+let currentChordMode = '';
 
-      // If the content script finally found the key, and it's new data, update the UI!
-      if (response.baseKey !== undefined && response.baseKey !== baseKeyIndex) {
+// Live Data Polling
+setInterval(() => {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs[0]) return;
+    chrome.tabs.sendMessage(tabs[0].id, { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.ok) return;
+
+      // Update "No Media" text immediately
+      const mediaStatus = document.querySelector('.status-text, .footer-text, p:last-of-type');
+      if (mediaStatus) {
+        mediaStatus.textContent = response.hookedCount > 0
+          ? 'Connected to ' + response.hookedCount + ' media element(s)'
+          : 'No media on this page (press play)';
+      }
+
+      // Force Key Badge to render immediately
+      if (response.baseKey !== undefined) {
+        // Assuming baseKeyIndex and baseMode are declared at the top of your file
         baseKeyIndex = response.baseKey;
         baseMode = response.baseMode;
-        render();
+
+        const badge = document.getElementById('key-badge');
+        if (badge) {
+          if (baseKeyIndex === -1) {
+            badge.textContent = "Analyzing song key...";
+          } else {
+            const exactNote = baseKeyIndex + semitones;
+            let nearestNoteIndex = Math.round(exactNote) % 12;
+            if (nearestNoteIndex < 0) nearestNoteIndex += 12;
+
+            // NOTE_NAMES will now successfully translate the number to a letter!
+            badge.textContent = NOTE_NAMES[nearestNoteIndex] + " " + baseMode;
+          }
+        }
       }
-    }
-  );
-}, 1000); // Check once every second
+
+      // Update Live Chord
+      if (response.chordKey !== undefined && (response.chordKey !== currentChordKey || response.chordMode !== currentChordMode)) {
+        currentChordKey = response.chordKey;
+        currentChordMode = response.chordMode;
+
+        const chordEl = document.getElementById('chord-display');
+        if (chordEl) {
+          if (currentChordKey === -1) {
+            chordEl.textContent = "--";
+          } else {
+            const exactNote = currentChordKey + semitones;
+            let nearestNoteIndex = Math.round(exactNote) % 12;
+            if (nearestNoteIndex < 0) nearestNoteIndex += 12;
+
+            // NOTE_NAMES will now successfully translate the number to a letter!
+            chordEl.textContent = NOTE_NAMES[nearestNoteIndex] + " " + currentChordMode;
+          }
+        }
+      }
+    });
+  });
+}, 500);

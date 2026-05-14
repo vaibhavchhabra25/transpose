@@ -148,6 +148,32 @@ header {
   min-height: 30px;
 }
 
+
+.chord-guide-container {
+  margin-top: 20px;
+  background: rgba(20, 20, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.chord-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #888;
+  margin-bottom: 5px;
+}
+
+.chord-display {
+  font-family: var(--font-ui);
+  font-size: 28px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
 /* ── Controls ── */
 
 .controls {

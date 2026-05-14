@@ -12,28 +12,99 @@
 
     // ── Key Detection State ──
     const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
-    const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+    // 🚀 UPGRADED: Bipartite "Diatonic Penalty" Profiles
+    // Notes in the scale get positive points. Notes OUTSIDE the scale get -2.0 penalties.
+    // This mathematically destroys "Imposter" keys like B Major when the song is actually in E Major.
+    const MAJOR_PROFILE = [5.0, -2.0, 2.5, -2.0, 4.0, 2.0, -2.0, 4.5, -2.0, 3.0, -2.0, 3.0];
+    const MINOR_PROFILE = [5.0, -2.0, 2.5, 4.0, -2.0, 2.0, -2.0, 4.5, 3.0, -2.0, 2.0, -2.0];
+
+    // Triad Chord Profiles
+    const MAJOR_TRIAD = [1.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0];
+    const MINOR_TRIAD = [1.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0];
 
     let accumulatedChroma = new Float32Array(12);
+    let smoothedChordChroma = new Float32Array(12); // 🚀 NEW: Moving Average filter for chords
     let chromaFrames = 0;
+
     let detectedKeyIndex = -1;
     let detectedMode = '';
-    let keyHistory = []; // 🚀 NEW: Voting system history
+    let keyHistory = [];
+
+    let currentChordIndex = -1;
+    let currentChordMode = '';
+    let chordHistory = []; // 🚀 NEW: Voting system for chords
+
+    function getCorrelation(profile, testProfile) {
+        let pMean = profile.reduce((a, b) => a + b) / 12;
+        let tMean = testProfile.reduce((a, b) => a + b) / 12;
+        let num = 0, den1 = 0, den2 = 0;
+        for (let i = 0; i < 12; i++) {
+            let pDiff = profile[i] - pMean;
+            let tDiff = testProfile[i] - tMean;
+            num += pDiff * tDiff;
+            den1 += pDiff * pDiff;
+            den2 += tDiff * tDiff;
+        }
+        return (den1 === 0 || den2 === 0) ? 0 : num / Math.sqrt(den1 * den2);
+    }
+
+    function calculateChord(chroma) {
+        let maxScore = -1;
+        let bestChord = -1;
+        let bestMode = '';
+
+        for (let i = 0; i < 12; i++) {
+            let shiftedChroma = [];
+            for (let j = 0; j < 12; j++) shiftedChroma.push(chroma[(j + i) % 12]);
+
+            let majScore = getCorrelation(MAJOR_TRIAD, shiftedChroma);
+            let minScore = getCorrelation(MINOR_TRIAD, shiftedChroma);
+
+            if (majScore > maxScore) { maxScore = majScore; bestChord = i; bestMode = 'maj'; }
+            if (minScore > maxScore) { maxScore = minScore; bestChord = i; bestMode = 'min'; }
+        }
+
+        if (maxScore > 0.75) {
+            chordHistory.push({ key: bestChord, mode: bestMode });
+            // 🚀 UPGRADE: Hold 8 frames (~0.5 seconds) for rock-solid chords
+            if (chordHistory.length > 8) chordHistory.shift();
+
+            let counts = {};
+            let topCount = 0;
+            let topHash = '';
+
+            for (let h of chordHistory) {
+                let hash = h.key + '|' + h.mode;
+                counts[hash] = (counts[hash] || 0) + 1;
+                if (counts[hash] > topCount) { topCount = counts[hash]; topHash = hash; }
+            }
+
+            // Require 5 out of 8 frames to agree before changing the UI
+            if (topCount >= 5) {
+                let parts = topHash.split('|');
+                let newKey = parseInt(parts[0]);
+                let newMode = parts[1];
+
+                if (currentChordIndex !== newKey || currentChordMode !== newMode) {
+                    currentChordIndex = newKey;
+                    currentChordMode = newMode;
+                    broadcastState();
+                }
+            }
+        }
+    }
 
     function calculateKey(chroma) {
-        function getCorrelation(profile, testProfile) {
-            let pMean = profile.reduce((a, b) => a + b) / 12;
-            let tMean = testProfile.reduce((a, b) => a + b) / 12;
-            let num = 0, den1 = 0, den2 = 0;
-            for (let i = 0; i < 12; i++) {
-                let pDiff = profile[i] - pMean;
-                let tDiff = testProfile[i] - tMean;
-                num += pDiff * tDiff;
-                den1 += pDiff * pDiff;
-                den2 += tDiff * tDiff;
-            }
-            return num / Math.sqrt(den1 * den2);
+        let cleanChroma = new Float32Array(12);
+        for (let i = 0; i < 12; i++) cleanChroma[i] = chroma[i];
+
+        for (let i = 0; i < 12; i++) {
+            let fifth = (i + 7) % 12;
+            cleanChroma[fifth] -= chroma[i] * 0.5;
+        }
+        for (let i = 0; i < 12; i++) {
+            if (cleanChroma[i] < 0) cleanChroma[i] = 0;
         }
 
         let maxScore = -1;
@@ -42,40 +113,43 @@
 
         for (let i = 0; i < 12; i++) {
             let shiftedChroma = [];
-            for (let j = 0; j < 12; j++) shiftedChroma.push(chroma[(j + i) % 12]);
+            for (let j = 0; j < 12; j++) shiftedChroma.push(cleanChroma[(j + i) % 12]);
+
             let majScore = getCorrelation(MAJOR_PROFILE, shiftedChroma);
             let minScore = getCorrelation(MINOR_PROFILE, shiftedChroma);
+
+            if (detectedKeyIndex === i) {
+                if (detectedMode === 'Major') majScore += 0.20;
+                if (detectedMode === 'Minor') minScore += 0.20;
+            }
 
             if (majScore > maxScore) { maxScore = majScore; bestKey = i; bestMode = 'Major'; }
             if (minScore > maxScore) { maxScore = minScore; bestKey = i; bestMode = 'Minor'; }
         }
 
-        if (maxScore > 0.55) {
-            // 🚀 NEW: Voting System to prevent chord-chasing
-            keyHistory.push({ key: bestKey, mode: bestMode });
-            if (keyHistory.length > 5) keyHistory.shift(); // Keep last 5 guesses
+        // 🚀 THE FIX: Removed the `if (maxScore > 0.50)` threshold block!
+        keyHistory.push({ key: bestKey, mode: bestMode });
+        if (keyHistory.length > 10) keyHistory.shift();
 
-            let counts = {};
-            let topCount = 0;
-            let topHash = '';
+        let counts = {};
+        let topCount = 0;
+        let topHash = '';
 
-            for (let h of keyHistory) {
-                let hash = h.key + '|' + h.mode;
-                counts[hash] = (counts[hash] || 0) + 1;
-                if (counts[hash] > topCount) { topCount = counts[hash]; topHash = hash; }
-            }
+        for (let h of keyHistory) {
+            let hash = h.key + '|' + h.mode;
+            counts[hash] = (counts[hash] || 0) + 1;
+            if (counts[hash] > topCount) { topCount = counts[hash]; topHash = hash; }
+        }
 
-            // Only lock in the key if 3 of the last 5 guesses agree
-            if (topCount >= 3) {
-                let parts = topHash.split('|');
-                let newKey = parseInt(parts[0]);
-                let newMode = parts[1];
+        if (topCount >= 6) {
+            let parts = topHash.split('|');
+            let newKey = parseInt(parts[0]);
+            let newMode = parts[1];
 
-                if (detectedKeyIndex !== newKey || detectedMode !== newMode) {
-                    detectedKeyIndex = newKey;
-                    detectedMode = newMode;
-                    broadcastState();
-                }
+            if (detectedKeyIndex !== newKey || detectedMode !== newMode) {
+                detectedKeyIndex = newKey;
+                detectedMode = newMode;
+                broadcastState();
             }
         }
     }
@@ -217,8 +291,10 @@
                     hookedCount: elementMap.size,
                     semitones: currentSemitones,
                     formants: currentFormants,
-                    baseKey: detectedKeyIndex, // 🚀 NEW
-                    baseMode: detectedMode     // 🚀 NEW
+                    baseKey: detectedKeyIndex,
+                    baseMode: detectedMode,
+                    chordKey: currentChordIndex, // 🚀 NEW
+                    chordMode: currentChordMode  // 🚀 NEW
                 },
             }));
         }, 150);
@@ -266,16 +342,31 @@
     });
 
     document.addEventListener('__pitchshift:getstate', () => {
-        broadcastState();
+        // 🚀 THE FIX: A 10ms micro-delay. 
+        // This bypasses Chrome's security bug, allowing the CustomEvent 
+        // to safely cross from the Main World back to the Isolated World!
+        setTimeout(() => {
+            document.dispatchEvent(new CustomEvent('__pitchshift:state', {
+                detail: {
+                    hookedCount: elementMap.size,
+                    semitones: currentSemitones,
+                    formants: currentFormants,
+                    baseKey: detectedKeyIndex,
+                    baseMode: detectedMode,
+                    chordKey: currentChordIndex,
+                    chordMode: currentChordMode
+                },
+            }));
+        }, 10);
     });
 
     const resumeContexts = () => {
         if (fallbackCtx && fallbackCtx.state === 'suspended') {
-            fallbackCtx.resume().catch(() => {}); // 🚀 Catch and ignore browser blocks
+            fallbackCtx.resume().catch(() => { }); // 🚀 Catch and ignore browser blocks
         }
         for (const [, shifter] of elementMap) {
             if (shifter.context && shifter.context.state === 'suspended') {
-                shifter.context.resume().catch(() => {}); // 🚀 Catch and ignore browser blocks
+                shifter.context.resume().catch(() => { }); // 🚀 Catch and ignore browser blocks
             }
         }
     };
@@ -301,7 +392,7 @@
             try {
                 sourceNode = origCreateMediaElementSource.call(this, mediaElement);
             } catch (err) {
-                return this.createGain(); 
+                return this.createGain();
             }
 
             const proxyNode = this.createGain();
@@ -321,6 +412,15 @@
                 // Attach message listener for Key Detection
                 shifter.port.onmessage = (e) => {
                     if (e.data.type === 'chroma') {
+                        // 🚀 NEW: Exponential Moving Average to smooth out "filler" passing notes
+                        for (let i = 0; i < 12; i++) {
+                            smoothedChordChroma[i] = (smoothedChordChroma[i] * 0.6) + (e.data.data[i] * 0.4);
+                        }
+
+                        // 1. Live Chord Detection using the smoothed data
+                        calculateChord(smoothedChordChroma);
+
+                        // 2. Global Key Detection
                         for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
                         chromaFrames++;
                         if (chromaFrames > 15) {
@@ -374,13 +474,19 @@
             });
             shifter.port.onmessage = (e) => {
                 if (e.data.type === 'chroma') {
+                    // 🚀 NEW: Exponential Moving Average to smooth out "filler" passing notes
+                    for (let i = 0; i < 12; i++) {
+                        smoothedChordChroma[i] = (smoothedChordChroma[i] * 0.6) + (e.data.data[i] * 0.4);
+                    }
+
+                    // 1. Live Chord Detection using the smoothed data
+                    calculateChord(smoothedChordChroma);
+
+                    // 2. Global Key Detection
                     for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
                     chromaFrames++;
-                    // Run every ~7 seconds
                     if (chromaFrames > 15) {
                         calculateKey(accumulatedChroma);
-                        // 🚀 NEW: Slow decay (0.85 instead of 0.5). 
-                        // This remembers the global song history, ignoring temporary chords!
                         for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
                         chromaFrames = 0;
                     }
@@ -449,7 +555,7 @@
         for (const [el, shifter] of elementMap) {
             // Check if the audio is actually "alive" (heartbeat check)
             const isPlaying = !el.paused && !el.ended && el.currentTime > 0;
-            
+
             // Check for progress
             const lastTime = lastTimeMap.get(el) || 0;
             const isMoving = el.currentTime !== lastTime;
@@ -460,17 +566,17 @@
                 // If it's disconnected from DOM but STILL playing music, 
                 // DO NOT PRUNE. Spotify does this during track transitions.
                 if (isPlaying && isMoving) {
-                    continue; 
+                    continue;
                 }
 
                 if (!disconnectionTimes.has(el)) {
                     disconnectionTimes.set(el, now);
                 }
-                
+
                 // Only prune if it's disconnected AND silent/paused for > 10 seconds
                 if (now - disconnectionTimes.get(el) > 10000) {
                     console.info('[PitchShift] Pruning truly dead element.');
-                    try { shifter.disconnect(); } catch (e) {}
+                    try { shifter.disconnect(); } catch (e) { }
                     elementMap.delete(el);
                     hookedSet.delete(el);
                     disconnectionTimes.delete(el);
