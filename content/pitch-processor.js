@@ -62,7 +62,6 @@ function createChannelState(F, H) {
     env: new Float32Array((F >> 1) + 1),
     phases: new Float32Array((F >> 1) + 1),
     master: new Int32Array((F >> 1) + 1),
-    chroma: new Float32Array(12)
   };
 }
 
@@ -161,20 +160,18 @@ function processFrame(s, F, H, win, pf, expAdvTable, preserveFormants, masterSta
     if (tk >= 0 && tk <= half) {
       let finalMag = mags[k];
 
-      // 🚀 THE VOLUME FIX: Decoupled Gain Logic
+      // Energy compensation for bin remapping:
+      // Upward shifts discard bins above Nyquist → energy loss of ~1/pf → compensate with sqrt(pf).
+      // Downward shifts accumulate multiple bins per target → energy is preserved via random-phase
+      // addition → no compensation needed (gain = 1.0).
+      const energyGain = pf > 1.0 ? Math.sqrt(pf) : 1.0;
+
       if (preserveFormants === 1.0) {
-        // FORMANTS ON: The envelope naturally preserves the volume power.
         const formantScale = env[tk] / (env[k] + 1e-6);
         const safeScale = Math.max(0.1, Math.min(formantScale, 5.0));
-        finalMag = mags[k] * safeScale;
-        // Add a very tiny boost just to keep it bright
-        if (pf > 1.0) finalMag *= 1.1;
+        finalMag = mags[k] * safeScale * energyGain;
       } else {
-        // FORMANTS OFF: Apply a stronger psychoacoustic makeup gain.
-        // If shifting up, use 'pf' (stronger) to fight the Fletcher-Munson hearing drop.
-        // If shifting down, use 'Math.sqrt' (gentler) to prevent muddy bass buildup.
-        const makeupGain = pf > 1.0 ? pf : Math.sqrt(pf);
-        finalMag *= makeupGain;
+        finalMag *= energyGain;
       }
 
       oR[tk] += finalMag * Math.cos(outPhase);
@@ -212,7 +209,6 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
     this.frameCounter = 0;
 
     this.expAdvTable = new Float32Array((this.F >> 1) + 1);
-    this.binToPitchClass = new Int32Array((this.F >> 1) + 1);
 
     // 🚀 UPGRADED: Fractional Binning Arrays
     this.binWeights = new Float32Array((this.F >> 1) + 1);

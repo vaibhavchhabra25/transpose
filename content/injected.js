@@ -19,21 +19,12 @@
     const MAJOR_PROFILE = [5.0, -2.0, 2.5, -2.0, 4.0, 2.0, -2.0, 4.5, -2.0, 3.0, -2.0, 3.0];
     const MINOR_PROFILE = [5.0, -2.0, 2.5, 4.0, -2.0, 2.0, -2.0, 4.5, 3.0, -2.0, 2.0, -2.0];
 
-    // Triad Chord Profiles
-    const MAJOR_TRIAD = [1.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0];
-    const MINOR_TRIAD = [1.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0];
-
     let accumulatedChroma = new Float32Array(12);
-    let smoothedChordChroma = new Float32Array(12); // 🚀 NEW: Moving Average filter for chords
     let chromaFrames = 0;
 
     let detectedKeyIndex = -1;
     let detectedMode = '';
     let keyHistory = [];
-
-    let currentChordIndex = -1;
-    let currentChordMode = '';
-    let chordHistory = []; // 🚀 NEW: Voting system for chords
 
     function getCorrelation(profile, testProfile) {
         let pMean = profile.reduce((a, b) => a + b) / 12;
@@ -47,52 +38,6 @@
             den2 += tDiff * tDiff;
         }
         return (den1 === 0 || den2 === 0) ? 0 : num / Math.sqrt(den1 * den2);
-    }
-
-    function calculateChord(chroma) {
-        let maxScore = -1;
-        let bestChord = -1;
-        let bestMode = '';
-
-        for (let i = 0; i < 12; i++) {
-            let shiftedChroma = [];
-            for (let j = 0; j < 12; j++) shiftedChroma.push(chroma[(j + i) % 12]);
-
-            let majScore = getCorrelation(MAJOR_TRIAD, shiftedChroma);
-            let minScore = getCorrelation(MINOR_TRIAD, shiftedChroma);
-
-            if (majScore > maxScore) { maxScore = majScore; bestChord = i; bestMode = 'maj'; }
-            if (minScore > maxScore) { maxScore = minScore; bestChord = i; bestMode = 'min'; }
-        }
-
-        if (maxScore > 0.75) {
-            chordHistory.push({ key: bestChord, mode: bestMode });
-            // 🚀 UPGRADE: Hold 8 frames (~0.5 seconds) for rock-solid chords
-            if (chordHistory.length > 8) chordHistory.shift();
-
-            let counts = {};
-            let topCount = 0;
-            let topHash = '';
-
-            for (let h of chordHistory) {
-                let hash = h.key + '|' + h.mode;
-                counts[hash] = (counts[hash] || 0) + 1;
-                if (counts[hash] > topCount) { topCount = counts[hash]; topHash = hash; }
-            }
-
-            // Require 5 out of 8 frames to agree before changing the UI
-            if (topCount >= 5) {
-                let parts = topHash.split('|');
-                let newKey = parseInt(parts[0]);
-                let newMode = parts[1];
-
-                if (currentChordIndex !== newKey || currentChordMode !== newMode) {
-                    currentChordIndex = newKey;
-                    currentChordMode = newMode;
-                    broadcastState();
-                }
-            }
-        }
     }
 
     function calculateKey(chroma) {
@@ -161,16 +106,11 @@
 
         // 1. Flush the Audio Math Buffers
         accumulatedChroma.fill(0);
-        smoothedChordChroma.fill(0);
         chromaFrames = 0;
 
         detectedKeyIndex = -1;
         detectedMode = '';
         keyHistory = [];
-
-        currentChordIndex = -1;
-        currentChordMode = '';
-        chordHistory = [];
 
         // 2. Reset the Pitch
         applyPitch(0, currentFormants);
@@ -182,6 +122,17 @@
 
         // 4. Force the UI to repaint
         broadcastState();
+    }
+
+    function handleChromaMessage(e) {
+        if (e.data.type !== 'chroma') return;
+        for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
+        chromaFrames++;
+        if (chromaFrames > 15) {
+            calculateKey(accumulatedChroma);
+            for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
+            chromaFrames = 0;
+        }
     }
 
     const elementMap = new Map();
@@ -323,8 +274,6 @@
                     formants: currentFormants,
                     baseKey: detectedKeyIndex,
                     baseMode: detectedMode,
-                    chordKey: currentChordIndex, // 🚀 NEW
-                    chordMode: currentChordMode  // 🚀 NEW
                 },
             }));
         }, 150);
@@ -382,20 +331,25 @@
                     formants: currentFormants,
                     baseKey: detectedKeyIndex,
                     baseMode: detectedMode,
-                    chordKey: currentChordIndex,
-                    chordMode: currentChordMode
                 },
             }));
         }, 20);
     });
 
     const resumeContexts = () => {
+        // 🚀 THE FIX: Check Chrome's native user gesture tracker first!
+        // If the user hasn't clicked/tapped the page yet, Chrome will aggressively log
+        // a warning if we even TRY to wake up the audio context. So we just back off.
+        if (navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+            return;
+        }
+
         if (fallbackCtx && fallbackCtx.state === 'suspended') {
-            fallbackCtx.resume().catch(() => { }); // 🚀 Catch and ignore browser blocks
+            fallbackCtx.resume().catch(() => { });
         }
         for (const [, shifter] of elementMap) {
             if (shifter.context && shifter.context.state === 'suspended') {
-                shifter.context.resume().catch(() => { }); // 🚀 Catch and ignore browser blocks
+                shifter.context.resume().catch(() => { });
             }
         }
     };
@@ -443,26 +397,7 @@
                 });
 
                 // Attach message listener for Key Detection
-                shifter.port.onmessage = (e) => {
-                    if (e.data.type === 'chroma') {
-                        // 🚀 NEW: Exponential Moving Average to smooth out "filler" passing notes
-                        for (let i = 0; i < 12; i++) {
-                            smoothedChordChroma[i] = (smoothedChordChroma[i] * 0.6) + (e.data.data[i] * 0.4);
-                        }
-
-                        // 1. Live Chord Detection using the smoothed data
-                        calculateChord(smoothedChordChroma);
-
-                        // 2. Global Key Detection
-                        for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
-                        chromaFrames++;
-                        if (chromaFrames > 15) {
-                            calculateKey(accumulatedChroma);
-                            for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
-                            chromaFrames = 0;
-                        }
-                    }
-                };
+                shifter.port.onmessage = handleChromaMessage;
 
                 const param = shifter.parameters.get('pitchFactor');
                 if (param) param.value = currentFactor;
@@ -509,26 +444,7 @@
                 numberOfOutputs: 1,
                 outputChannelCount: [2],
             });
-            shifter.port.onmessage = (e) => {
-                if (e.data.type === 'chroma') {
-                    // 🚀 NEW: Exponential Moving Average to smooth out "filler" passing notes
-                    for (let i = 0; i < 12; i++) {
-                        smoothedChordChroma[i] = (smoothedChordChroma[i] * 0.6) + (e.data.data[i] * 0.4);
-                    }
-
-                    // 1. Live Chord Detection using the smoothed data
-                    calculateChord(smoothedChordChroma);
-
-                    // 2. Global Key Detection
-                    for (let i = 0; i < 12; i++) accumulatedChroma[i] += e.data.data[i];
-                    chromaFrames++;
-                    if (chromaFrames > 15) {
-                        calculateKey(accumulatedChroma);
-                        for (let i = 0; i < 12; i++) accumulatedChroma[i] *= 0.85;
-                        chromaFrames = 0;
-                    }
-                }
-            };
+            shifter.port.onmessage = handleChromaMessage;
 
             const param = shifter.parameters.get('pitchFactor');
             if (param) param.value = currentFactor;
@@ -539,6 +455,8 @@
             broadcastState();
 
         } catch (err) {
+            // Remove from hookedSet on non-"already connected" errors so the
+            // play() override can retry hooking on next playback attempt.
             if (!err.message || !err.message.includes('already connected')) {
                 hookedSet.delete(el);
             }
@@ -554,27 +472,29 @@
     function scanForMedia(root) {
         if (!root) return;
 
-        // 1. Find all potential audio/video tags
         const elements = root.querySelectorAll ? root.querySelectorAll('video, audio') : [];
 
         elements.forEach(el => {
-            // Only attempt to hook if:
-            // - It's not already hooked
-            // - It hasn't been claimed by Spotify's native AudioContext
-            // - It actually has audio data (src)
             if (!hookedSet.has(el) && !el.__isNativeHooked) {
-                if (el.src || el.srcObject || el.querySelector('source')) {
-                    hookElement(el);
+                // 🚀 THE FIX: Smart Lazy Hooking
+                // Ignore elements that don't have a source yet, AND ignore muted auto-playing videos.
+                // (Instagram/Reddit auto-play videos on mute. We don't want to hook those!)
+                const hasSource = el.src || el.srcObject || el.querySelector('source');
+                const isAudible = !el.muted && el.volume > 0;
+
+                // Only hook if it has a source. We hook regardless of `isAudible` ONLY IF 
+                // it is an <audio> tag, because users rarely scroll past muted <audio> tags.
+                // For <video> tags, we strictly require it to be unmuted to prevent infinite-scroll crashes.
+                if (hasSource) {
+                    if (el.tagName.toLowerCase() === 'audio' || isAudible) {
+                        hookElement(el);
+                    }
                 }
             }
         });
 
-        // 2. Handle Shadow DOM (for sites like YouTube)
-        if (root.shadowRoot) {
-            scanForMedia(root.shadowRoot);
-        }
+        if (root.shadowRoot) scanForMedia(root.shadowRoot);
 
-        // 3. Recursive check for custom components
         const children = root.children;
         if (children) {
             for (let i = 0; i < children.length; i++) {
@@ -586,7 +506,7 @@
     const lastTimeMap = new Map();
     const disconnectionTimes = new Map(); // ⬅️ The missing variable!
 
-    setInterval(() => {
+    const scanInterval = setInterval(() => {
         const now = Date.now();
 
         for (const [el, shifter] of elementMap) {
@@ -626,6 +546,16 @@
 
         scanForMedia(document.body);
     }, 3000);
+
+    window.addEventListener('pagehide', () => {
+        clearInterval(scanInterval);
+        clearTimeout(broadcastTimer);
+        clearTimeout(toastTimer);
+        for (const [, shifter] of elementMap) { try { shifter.disconnect(); } catch (_) {} }
+        elementMap.clear();
+        lastTimeMap.clear();
+        disconnectionTimes.clear();
+    });
 
     scanForMedia(document.body);
 

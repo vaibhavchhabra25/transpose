@@ -219,15 +219,10 @@ function init() {
 
 init();
 
-let currentChordKey = -1;
-let currentChordMode = '';
-
-// 🚀 THE FIX: Cleaned up sync loop that uses your existing render() logic
 function syncWithEngine() {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]) return;
-    chrome.tabs.sendMessage(tabs[0].id, { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } }, (response) => {
-      // If the bridge fails, do nothing. Don't overwrite the UI.
+  chrome.runtime.sendMessage(
+    { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } },
+    (response) => {
       if (chrome.runtime.lastError || !response || !response.ok) return;
 
       // 1. Sync global variables from the engine
@@ -252,25 +247,8 @@ function syncWithEngine() {
         }
       }
 
-      // 3. Live Chord
-      if (response.chordKey !== undefined) {
-        currentChordKey = response.chordKey;
-        currentChordMode = response.chordMode;
-
-        const chordEl = document.getElementById('chord-display');
-        if (chordEl) {
-          if (currentChordKey === -1) {
-            chordEl.textContent = "--";
-          } else {
-            const exactNote = currentChordKey + semitones;
-            let nearestNoteIndex = Math.round(exactNote) % 12;
-            if (nearestNoteIndex < 0) nearestNoteIndex += 12;
-            chordEl.textContent = NOTE_NAMES[nearestNoteIndex] + " " + currentChordMode;
-          }
-        }
-      }
-    });
-  });
+    }
+  );
 }
 
 // Fetch instantly on open, then poll every 500ms

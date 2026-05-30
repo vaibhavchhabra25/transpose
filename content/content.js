@@ -7,33 +7,38 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
   const host = window.location.hostname;
 
   // Auto-load saved pitch
-  chrome.storage.local.get([`pitch_${host}`, `formants_${host}`], (res) => {
-    const savedPitch = res[`pitch_${host}`] || 0;
-    const savedFormants = res[`formants_${host}`] || 0;
-    if (savedPitch !== 0 || savedFormants !== 0) {
-      setTimeout(() => {
-        document.dispatchEvent(new CustomEvent('__pitchshift:set', {
-          detail: { semitones: savedPitch, formants: savedFormants }
-        }));
-      }, 200);
-    }
-  });
+  if (chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get([`pitch_${host}`, `formants_${host}`], (res) => {
+      const savedPitch = res[`pitch_${host}`] || 0;
+      const savedFormants = res[`formants_${host}`] || 0;
+      if (savedPitch !== 0 || savedFormants !== 0) {
+        setTimeout(() => {
+          document.dispatchEvent(new CustomEvent('__pitchshift:set', {
+            detail: { semitones: savedPitch, formants: savedFormants }
+          }));
+        }, 200);
+      }
+    });
+  }
 
   // Save pitch changes
   document.addEventListener('__pitchshift:save', (e) => {
-    chrome.storage.local.set({
-      [`pitch_${host}`]: e.detail.semitones,
-      [`formants_${host}`]: e.detail.formants
-    });
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        [`pitch_${host}`]: e.detail.semitones,
+        [`formants_${host}`]: e.detail.formants
+      });
+    }
   });
 
   // Relay Popup <--> Injected World
+  // Messages arrive here already unwrapped by the service worker (inner payload only).
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    const action = msg.payload ? msg.payload.type : msg.type;
+    const action = msg.type;
 
     if (action === 'SET_SEMITONES') {
-      const semitones = msg.payload ? msg.payload.semitones : msg.semitones;
-      const formants = msg.payload ? msg.payload.formants : msg.formants;
+      const semitones = msg.semitones;
+      const formants = msg.formants;
 
       document.dispatchEvent(new CustomEvent('__pitchshift:set', {
         detail: { semitones: semitones, formants: formants },
@@ -45,7 +50,7 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
       });
 
       sendResponse({ ok: true });
-      return false; 
+      return false;
     }
 
     if (action === 'GET_STATE') {
@@ -59,14 +64,12 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
           formants: e.detail.formants,
           baseKey: e.detail.baseKey,
           baseMode: e.detail.baseMode,
-          chordKey: e.detail.chordKey,
-          chordMode: e.detail.chordMode
         });
       };
-      
+
       // 1. Start listening for the answer
       document.addEventListener('__pitchshift:state', onState);
-      
+
       // 2. Ask the engine for the data
       document.dispatchEvent(new CustomEvent('__pitchshift:getstate'));
 
@@ -77,7 +80,7 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
       }, 300);
 
       // 4. Return TRUE tells Chrome: "Wait for sendResponse, don't close!"
-      return true; 
+      return true;
     }
   });
 
