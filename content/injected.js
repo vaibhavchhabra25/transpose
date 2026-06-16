@@ -367,12 +367,18 @@
         NativeAudioContext.prototype.createMediaElementSource = function (mediaElement) {
             if (this.state === 'closed') return origCreateMediaElementSource.call(this, mediaElement);
 
+            // YouTube (and other SPAs) call createMediaElementSource again on the same
+            // element during video-to-video navigation. The native call would throw
+            // "already connected", so we return the original sourceNode (which still has
+            // our connect/disconnect overrides) so the site can re-link its graph through
+            // our proxyNode without breaking the audio chain.
+            if (mediaElement.__pitchShiftSourceNode && mediaElement.__pitchShiftCtx === this) {
+                return mediaElement.__pitchShiftSourceNode;
+            }
+
             // Mark and track
             mediaElement.__isNativeHooked = true;
-
-            // 🚀 Attach the reset listener
             mediaElement.addEventListener('emptied', resetEngine);
-
             hookedSet.add(mediaElement);
 
             let sourceNode;
@@ -382,6 +388,9 @@
                 console.error('[PitchShift] Native createMediaElementSource failed (element likely already bound to a different source node):', err);
                 return this.createGain();
             }
+
+            mediaElement.__pitchShiftSourceNode = sourceNode;
+            mediaElement.__pitchShiftCtx = this;
 
             const proxyNode = this.createGain();
             const origConnect = sourceNode.connect;
@@ -541,8 +550,12 @@
             }
 
             const inactiveFor = now - inactiveSince.get(el);
+            const rect = el.getBoundingClientRect();
+            const isVisible = rect.width > 0 && rect.height > 0 &&
+                rect.bottom > 0 && rect.top < window.innerHeight &&
+                rect.right > 0 && rect.left < window.innerWidth;
             const shouldPrune = (!el.isConnected && inactiveFor > DISCONNECTED_PRUNE_MS)
-                || (inactiveFor > INACTIVE_PRUNE_MS);
+                || (!isVisible && inactiveFor > INACTIVE_PRUNE_MS);
 
             if (shouldPrune) {
                 console.info('[PitchShift] Pruning inactive element.');
