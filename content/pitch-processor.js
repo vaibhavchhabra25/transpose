@@ -207,6 +207,14 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
     this.win = hannWindow(this.F);
     this.ch = [];
     this.frameCounter = 0;
+    this.active = true;
+    // Returning `true` from process() keeps this node alive and ticking
+    // forever, even once disconnected from the graph. Without an explicit
+    // shutdown signal, every worklet ever created keeps consuming CPU for
+    // the lifetime of the page.
+    this.port.onmessage = (e) => {
+      if (e.data && e.data.type === 'shutdown') this.active = false;
+    };
 
     this.expAdvTable = new Float32Array((this.F >> 1) + 1);
 
@@ -237,6 +245,7 @@ class PitchShifterProcessor extends AudioWorkletProcessor {
     }
   }
   process(inputs, outputs, params) {
+    if (!this.active) return false;
     if (!inputs || !outputs) return true;
     const inp = inputs[0];
     const out = outputs[0];

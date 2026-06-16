@@ -379,6 +379,7 @@
             try {
                 sourceNode = origCreateMediaElementSource.call(this, mediaElement);
             } catch (err) {
+                console.error('[PitchShift] Native createMediaElementSource failed (element likely already bound to a different source node):', err);
                 return this.createGain();
             }
 
@@ -455,6 +456,7 @@
             broadcastState();
 
         } catch (err) {
+            console.error('[PitchShift] Fallback hookElement failed:', err);
             // Remove from hookedSet on non-"already connected" errors so the
             // play() override can retry hooking on next playback attempt.
             if (!err.message || !err.message.includes('already connected')) {
@@ -504,7 +506,15 @@
     }
 
     const lastTimeMap = new Map();
-    const disconnectionTimes = new Map(); // ⬅️ The missing variable!
+    const inactiveSince = new Map();
+
+    // Feeds like Instagram Explore/Reels keep old <video> elements mounted
+    // (paused, scrolled off-screen) instead of removing them from the DOM.
+    // Pruning only on DOM disconnection misses these, so worklet nodes pile
+    // up forever on the shared AudioContext. Prune on sustained playback
+    // inactivity instead, regardless of DOM connection state.
+    const DISCONNECTED_PRUNE_MS = 10000;
+    const INACTIVE_PRUNE_MS = 15000;
 
     const scanInterval = setInterval(() => {
         const now = Date.now();
@@ -518,29 +528,32 @@
             const isMoving = el.currentTime !== lastTime;
             if (isPlaying) lastTimeMap.set(el, el.currentTime);
 
-            if (!el.isConnected) {
-                // 🚀 THE ZOMBIE CHECK:
-                // If it's disconnected from DOM but STILL playing music, 
-                // DO NOT PRUNE. Spotify does this during track transitions.
-                if (isPlaying && isMoving) {
-                    continue;
-                }
+            // 🚀 THE ZOMBIE CHECK:
+            // If it's still playing and progressing, DO NOT PRUNE, even if
+            // disconnected from the DOM. Spotify does this during track transitions.
+            if (isPlaying && isMoving) {
+                inactiveSince.delete(el);
+                continue;
+            }
 
-                if (!disconnectionTimes.has(el)) {
-                    disconnectionTimes.set(el, now);
-                }
+            if (!inactiveSince.has(el)) {
+                inactiveSince.set(el, now);
+            }
 
-                // Only prune if it's disconnected AND silent/paused for > 10 seconds
-                if (now - disconnectionTimes.get(el) > 10000) {
-                    console.info('[PitchShift] Pruning truly dead element.');
-                    try { shifter.disconnect(); } catch (e) { }
-                    elementMap.delete(el);
-                    hookedSet.delete(el);
-                    disconnectionTimes.delete(el);
-                    lastTimeMap.delete(el);
-                }
-            } else {
-                disconnectionTimes.delete(el);
+            const inactiveFor = now - inactiveSince.get(el);
+            const shouldPrune = (!el.isConnected && inactiveFor > DISCONNECTED_PRUNE_MS)
+                || (inactiveFor > INACTIVE_PRUNE_MS);
+
+            if (shouldPrune) {
+                console.info('[PitchShift] Pruning inactive element.');
+                // Tell the worklet to stop returning true from process(), or the
+                // browser keeps ticking it forever even after disconnect().
+                try { shifter.port.postMessage({ type: 'shutdown' }); } catch (e) { }
+                try { shifter.disconnect(); } catch (e) { }
+                elementMap.delete(el);
+                hookedSet.delete(el);
+                inactiveSince.delete(el);
+                lastTimeMap.delete(el);
             }
         }
 
@@ -551,10 +564,13 @@
         clearInterval(scanInterval);
         clearTimeout(broadcastTimer);
         clearTimeout(toastTimer);
-        for (const [, shifter] of elementMap) { try { shifter.disconnect(); } catch (_) {} }
+        for (const [, shifter] of elementMap) {
+            try { shifter.port.postMessage({ type: 'shutdown' }); } catch (_) {}
+            try { shifter.disconnect(); } catch (_) {}
+        }
         elementMap.clear();
         lastTimeMap.clear();
-        disconnectionTimes.clear();
+        inactiveSince.clear();
     });
 
     scanForMedia(document.body);
