@@ -135,6 +135,24 @@
         }
     }
 
+    // Stays false until content.js checks domain settings and dispatches __pitchshift:enable.
+    // This ensures the extension is fully inactive on disabled sites even though injected.js
+    // is always loaded by the manifest (we can't gate manifest content scripts on storage).
+    let pitchShiftEnabled = false;
+
+    document.addEventListener('__pitchshift:enable', () => {
+        if (pitchShiftEnabled) return;
+        pitchShiftEnabled = true;
+        scanForMedia(document.body);
+    });
+
+    document.addEventListener('__pitchshift:disable', () => {
+        pitchShiftEnabled = false;
+        // Keep the audio chain connected but set all worklets to passthrough (pf=1.0).
+        // Disconnecting would silence audio permanently (Web Audio can't be un-routed).
+        applyPitch(0, currentFormants);
+    });
+
     const elementMap = new Map();
     const hookedSet = new WeakSet();
     const readyContexts = new WeakSet();
@@ -281,6 +299,7 @@
 
     // ── Keyboard Shortcuts (Alt + Minus/Equal) ──
     window.addEventListener('keydown', (e) => {
+        if (!pitchShiftEnabled) return;
         // Require Alt (Option on Mac) to be held down
         if (e.altKey) {
             let newPitch = currentSemitones;
@@ -365,7 +384,7 @@
         const origCreateMediaElementSource = NativeAudioContext.prototype.createMediaElementSource;
 
         NativeAudioContext.prototype.createMediaElementSource = function (mediaElement) {
-            if (this.state === 'closed') return origCreateMediaElementSource.call(this, mediaElement);
+            if (!pitchShiftEnabled || this.state === 'closed') return origCreateMediaElementSource.call(this, mediaElement);
 
             // YouTube (and other SPAs) call createMediaElementSource again on the same
             // element during video-to-video navigation. The native call would throw
@@ -425,6 +444,7 @@
     }
 
     async function hookElement(el) {
+        if (!pitchShiftEnabled) return;
         if (!(el instanceof HTMLMediaElement)) return;
         if (el.__isNativeHooked || hookedSet.has(el)) return;
 
@@ -476,7 +496,7 @@
 
     const nativePlay = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
-        if (!hookedSet.has(this)) setTimeout(() => hookElement(this), 500);
+        if (pitchShiftEnabled && !hookedSet.has(this)) setTimeout(() => hookElement(this), 500);
         return nativePlay.call(this);
     };
 
@@ -523,9 +543,10 @@
     // up forever on the shared AudioContext. Prune on sustained playback
     // inactivity instead, regardless of DOM connection state.
     const DISCONNECTED_PRUNE_MS = 10000;
-    const INACTIVE_PRUNE_MS = 15000;
+    const INACTIVE_PRUNE_MS = 5000; // Off-screen fallback elements (Instagram) pruned quickly
 
     const scanInterval = setInterval(() => {
+        if (!pitchShiftEnabled) return;
         const now = Date.now();
 
         for (const [el, shifter] of elementMap) {
@@ -550,12 +571,27 @@
             }
 
             const inactiveFor = now - inactiveSince.get(el);
-            const rect = el.getBoundingClientRect();
-            const isVisible = rect.width > 0 && rect.height > 0 &&
-                rect.bottom > 0 && rect.top < window.innerHeight &&
-                rect.right > 0 && rect.left < window.innerWidth;
-            const shouldPrune = (!el.isConnected && inactiveFor > DISCONNECTED_PRUNE_MS)
-                || (!isVisible && inactiveFor > INACTIVE_PRUNE_MS);
+
+            // Native-hooked elements (YouTube, Spotify) live inside the site's own
+            // AudioContext. There are never more than a couple, so ghost-worklet
+            // accumulation is not a concern. Only prune them if they are actually
+            // removed from the DOM — never on visibility or inactivity alone, because
+            // users routinely scroll past the player or pause while reading comments.
+            //
+            // Fallback-hooked elements (Instagram, Reddit) use our own AudioContext
+            // and must be pruned aggressively: infinite-scroll pages can mount dozens
+            // of paused off-screen <video> elements that would pile up as ghost worklets.
+            let shouldPrune;
+            if (el.__isNativeHooked) {
+                shouldPrune = !el.isConnected && inactiveFor > DISCONNECTED_PRUNE_MS;
+            } else {
+                const rect = el.getBoundingClientRect();
+                const isVisible = rect.width > 0 && rect.height > 0 &&
+                    rect.bottom > 0 && rect.top < window.innerHeight &&
+                    rect.right > 0 && rect.left < window.innerWidth;
+                shouldPrune = (!el.isConnected && inactiveFor > DISCONNECTED_PRUNE_MS)
+                    || (!isVisible && inactiveFor > INACTIVE_PRUNE_MS);
+            }
 
             if (shouldPrune) {
                 console.info('[PitchShift] Pruning inactive element.');
@@ -586,7 +622,5 @@
         inactiveSince.clear();
     });
 
-    scanForMedia(document.body);
-
-    console.info('[PitchShift] MAIN world ready.');
+    console.info('[PitchShift] MAIN world ready (waiting for domain check).');
 })();

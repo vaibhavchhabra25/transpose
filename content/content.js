@@ -5,6 +5,15 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
 (function () {
   'use strict';
   const host = window.location.hostname;
+  const domain = host.replace(/^www\./, '');
+
+  // Check domain settings before enabling the engine.
+  // injected.js starts inactive; we activate it here if this domain is not disabled.
+  chrome.storage.sync.get(['disabledDomains'], ({ disabledDomains = [] }) => {
+    if (!disabledDomains.includes(domain)) {
+      document.dispatchEvent(new CustomEvent('__pitchshift:enable'));
+    }
+  });
 
   // Auto-load saved pitch
   if (chrome.storage && chrome.storage.local) {
@@ -49,6 +58,26 @@ document.documentElement.dataset.processorUrl = chrome.runtime.getURL('content/p
         [`formants_${host}`]: formants
       });
 
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (action === 'DISABLE_ENGINE') {
+      document.dispatchEvent(new CustomEvent('__pitchshift:disable'));
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (action === 'ENABLE_ENGINE') {
+      document.dispatchEvent(new CustomEvent('__pitchshift:enable'));
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (action === 'ENABLE_IF_DOMAIN') {
+      if (domain === msg.domain) {
+        document.dispatchEvent(new CustomEvent('__pitchshift:enable'));
+      }
       sendResponse({ ok: true });
       return false;
     }

@@ -219,6 +219,66 @@ function init() {
 
 init();
 
+// ─── Domain toggle ────────────────────────────────────────────────────────────
+
+let currentDomain = '';
+
+async function initDomainControl() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.url || !tab.url.startsWith('http')) {
+      document.getElementById('siteRow').style.display = 'none';
+      return;
+    }
+    currentDomain = new URL(tab.url).hostname.replace(/^www\./, '');
+    if (!currentDomain) { document.getElementById('siteRow').style.display = 'none'; return; }
+
+    const { disabledDomains = [] } = await chrome.storage.sync.get(['disabledDomains']);
+    renderSiteToggle(!disabledDomains.includes(currentDomain));
+  } catch (_) {
+    document.getElementById('siteRow').style.display = 'none';
+  }
+}
+
+function renderSiteToggle(isEnabled) {
+  const btn = document.getElementById('siteToggleBtn');
+  if (!btn) return;
+  if (isEnabled) {
+    btn.textContent = `Active on ${currentDomain}`;
+    btn.classList.remove('site-disabled');
+    btn.title = `Click to disable PitchShift on ${currentDomain}`;
+  } else {
+    btn.textContent = `Disabled on ${currentDomain}`;
+    btn.classList.add('site-disabled');
+    btn.title = `Click to enable PitchShift on ${currentDomain}`;
+  }
+}
+
+document.getElementById('siteToggleBtn').addEventListener('click', async () => {
+  if (!currentDomain) return;
+  const { disabledDomains = [] } = await chrome.storage.sync.get(['disabledDomains']);
+  const isEnabled = !disabledDomains.includes(currentDomain);
+  const newList = isEnabled
+    ? [...disabledDomains, currentDomain]
+    : disabledDomains.filter(d => d !== currentDomain);
+  await chrome.storage.sync.set({ disabledDomains: newList });
+  renderSiteToggle(!isEnabled);
+
+  // Signal the running engine immediately — no reload needed
+  const engineMsg = isEnabled ? 'DISABLE_ENGINE' : 'ENABLE_ENGINE';
+  chrome.runtime.sendMessage({ type: 'RELAY_TO_CONTENT', payload: { type: engineMsg } });
+
+  setStatus('idle', isEnabled
+    ? `PitchShift disabled on ${currentDomain}`
+    : `PitchShift enabled — reload to hook new media`);
+});
+
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  chrome.runtime.openOptionsPage();
+});
+
+initDomainControl();
+
 function syncWithEngine() {
   chrome.runtime.sendMessage(
     { type: 'RELAY_TO_CONTENT', payload: { type: 'GET_STATE' } },
